@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import http from '@/api/http'
+import { refreshWithToken } from '@/api/auth'
 import type { CurrentUserProfile } from '@/api/auth'
 
 const router = useRouter()
@@ -24,6 +25,7 @@ interface SavedAccount {
   displayName: string
   systemRole: string
   accessToken: string
+  refreshToken: string
   userCode: string
   mustChangePassword: boolean
 }
@@ -34,19 +36,36 @@ function getSavedAccounts(): SavedAccount[] {
   } catch { return [] }
 }
 
+function persistAccounts(accounts: SavedAccount[]) {
+  localStorage.setItem('argus_accounts', JSON.stringify(accounts.slice(0, 5)))
+}
+
 function saveCurrentAccount() {
   if (!authStore.accessToken || !authStore.currentUser) return
+  // 页面刷新后内存中的 refreshToken 会丢失（access token 从 localStorage 恢复），
+  // 此时保留快照里已有的 refreshToken，避免用空值覆盖
+  const existing = getSavedAccounts().find(a => a.userId === authStore.currentUser!.userId)
   const accounts = getSavedAccounts().filter(a => a.userId !== authStore.currentUser!.userId)
   accounts.unshift({
     userId: authStore.currentUser.userId,
     displayName: authStore.currentUser.displayName,
     systemRole: authStore.currentUser.systemRole,
     accessToken: authStore.accessToken,
+    refreshToken: authStore.refreshToken ?? existing?.refreshToken ?? '',
     userCode: authStore.currentUser.userCode ?? '',
     mustChangePassword: authStore.currentUser.mustChangePassword ?? false,
   })
-  // Keep max 5 accounts
-  localStorage.setItem('argus_accounts', JSON.stringify(accounts.slice(0, 5)))
+  persistAccounts(accounts)
+}
+
+// JWT exp 客户端解码（不验签，仅用于 UI 状态提示与跳过无效校验请求）
+function tokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return (Number(payload.exp) || 0) * 1000 <= Date.now()
+  } catch {
+    return true
+  }
 }
 
 const savedAccounts = ref<SavedAccount[]>(getSavedAccounts())
@@ -65,12 +84,20 @@ function closeUserMenu() {
 
 async function handleSwitchAccount(account: SavedAccount) {
   showUserMenu.value = false
-  // 校验目标账号的 access token 是否仍有效。
-  // 不要走 refresh —— httpOnly cookie 可能属于其他账号，静默刷新会切错人。
   try {
-    await http.get('/auth/me', {
-      headers: { Authorization: `Bearer ${account.accessToken}` },
-    })
+    if (tokenExpired(account.accessToken)) {
+      // access token 已过期：直接用目标账号自己的 refresh token 静默续期
+      await renewTargetAccount(account)
+    } else {
+      try {
+        await http.get('/auth/me', {
+          headers: { Authorization: `Bearer ${account.accessToken}` },
+        })
+      } catch {
+        // 校验失败（过期/被吊销）：同样走静默续期
+        await renewTargetAccount(account)
+      }
+    }
   } catch {
     ElMessage.warning('该账号登录已过期，请重新登录后切换')
     return // 保留当前会话，不切换
@@ -85,8 +112,23 @@ async function handleSwitchAccount(account: SavedAccount) {
     displayName: account.displayName,
     systemRole: account.systemRole as 'ADMIN' | 'USER',
     mustChangePassword: account.mustChangePassword ?? false,
-  })
+  }, account.refreshToken)
   router.go(0) // Full reload to re-init all state
+}
+
+// 用目标账号的 refresh token 静默续期并更新快照（后端轮换 token，
+// 响应中的新 refresh token 会经 cookie + 快照同时落位）
+async function renewTargetAccount(account: SavedAccount) {
+  if (!account.refreshToken) throw new Error('账号快照缺少 refresh token')
+  const session = await refreshWithToken(account.refreshToken)
+  account.accessToken = session.accessToken
+  account.refreshToken = session.refreshToken
+  account.userId = session.currentUser.userId
+  account.userCode = session.currentUser.userCode ?? ''
+  account.displayName = session.currentUser.displayName
+  account.systemRole = session.currentUser.systemRole
+  account.mustChangePassword = session.currentUser.mustChangePassword ?? false
+  persistAccounts(getSavedAccounts().map(a => (a.userId === account.userId ? account : a)))
 }
 
 async function handleLogout() {
@@ -120,6 +162,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/app/admin/audit')) return 'audit'
   if (path.startsWith('/app/admin/assistant')) return 'admin-assistant'
   if (path.startsWith('/app/admin/api-tokens')) return 'api-tokens'
+  if (path.startsWith('/app/admin/models')) return 'admin-models'
   if (path.startsWith('/app/admin/metrics')) return 'metrics'
   if (path.startsWith('/app/admin')) return 'admin'
   if (path.startsWith('/app/settings')) return 'settings'
@@ -235,6 +278,13 @@ const allBottomItems = [
     label: 'API 令牌',
     icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 10V7a4 4 0 0 1 8 0V10" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="15" r="1.6" stroke="currentColor" stroke-width="1.5"/></svg>`,
     path: '/app/admin/api-tokens',
+    roles: ['ADMIN'] as const,
+  },
+  {
+    key: 'admin-models',
+    label: '模型管理',
+    icon: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 2a10 10 0 0 1 7 17H5a10 10 0 0 1 7-17z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>`,
+    path: '/app/admin/models',
     roles: ['ADMIN'] as const,
   },
   {
@@ -371,6 +421,7 @@ function navigateTo(path: string) {
                   <span class="dropdown-account-avatar">{{ acc.displayName.charAt(0).toUpperCase() }}</span>
                   <span class="dropdown-account-name">{{ acc.displayName }}</span>
                   <span class="dropdown-account-role">{{ acc.systemRole === 'ADMIN' ? '管理员' : '用户' }}</span>
+                  <span v-if="tokenExpired(acc.accessToken)" class="dropdown-account-expired">已过期</span>
                   <svg v-if="acc.userId === authStore.currentUser?.userId" class="dropdown-account-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
@@ -957,6 +1008,15 @@ function navigateTo(path: string) {
 .dropdown-account-role {
   font-size: 0.68rem;
   color: var(--text-muted);
+}
+
+.dropdown-account-expired {
+  font-size: 0.62rem;
+  color: var(--danger, #f56c6c);
+  background: rgba(245, 108, 108, 0.1);
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
 }
 
 .dropdown-account-check {

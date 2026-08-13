@@ -29,6 +29,14 @@ class CurrentUserProfile(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RefreshRequest(BaseModel):
+    """账号切换场景：body 直传目标账号的 refresh token（httpOnly cookie
+    只属于最后登录的账号，切换时无法使用）。"""
+    refresh_token: Optional[str] = Field(default=None, alias="refreshToken")
+
+    model_config = {"populate_by_name": True}
+
+
 class AuthTokensResponse(BaseModel):
     access_token: str = Field(alias="accessToken")
     refresh_token: str = Field(alias="refreshToken")

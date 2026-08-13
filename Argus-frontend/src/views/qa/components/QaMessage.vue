@@ -90,6 +90,14 @@ function formatTime(ts: number): string {
       <!-- Assistant answer markdown -->
       <div v-else class="qa-msg__markdown" v-html="rendered" />
 
+      <!-- Interrupted marker -->
+      <div v-if="message.reasonCode === 'INTERRUPTED'" class="qa-msg__stopped">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+          <rect x="5" y="5" width="14" height="14" rx="2" />
+        </svg>
+        <span>已停止生成 · 以上为部分回答</span>
+      </div>
+
       <!-- Citations -->
       <CitationRail
         v-if="message.role === 'assistant' && message.citations && message.citations.length > 0"
@@ -289,6 +297,18 @@ function formatTime(ts: number): string {
   font-size: 0.87rem;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.qa-msg__stopped {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 3px 10px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  border-radius: 100px;
 }
 
 /* Markdown styles — scoped :deep for v-html */

@@ -14,41 +14,62 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = "rag_document_chunks"
 
 
+async def _resolve_embedding() -> tuple[dict, "object | None"]:
+    """返回 (embedding 配置 dict, 模型卡片)。激活配置优先，失败回退 .env。"""
+    from app.models_config.resolver import get_embedding_config
+    from app.models_config.cards import get_card
+
+    s = settings.embedding
+    cfg = {"base_url": s.base_url, "api_key": s.api_key, "model_name": s.model_name}
+    try:
+        active = await get_embedding_config(1)
+        if active:
+            cfg = active
+    except Exception:
+        pass
+    return cfg, get_card(cfg["model_name"])
+
+
 async def _embed_texts(texts: List[str], user_id: int = None) -> List[List[float]]:
-    """Call embedding API, using active model config if available."""
+    """Call embedding API, using active model config if available.
+
+    请求/响应协议由模型卡片声明（api.request_format / api.response_format）；
+    未注册的模型按 base_url 推断（含 dashscope → 原生协议）。
+    """
     import time
     _t0 = time.perf_counter()
-    from app.models_config.resolver import get_embedding_config
+    from app.models_config.cards import ApiFormat
 
-    # Try to get admin's active config; if not available, use .env defaults
-    s = settings.embedding
-    api_url = ""
-    api_key = s.api_key
-    model_name = s.model_name
+    cfg, card = await _resolve_embedding()
+    api_key = cfg["api_key"]
+    model_name = cfg["model_name"]
+    api_url = cfg["base_url"]
+    logger.info("Embedding timing: config ready in %.0fms, sending %d texts (model=%s)",
+                (time.perf_counter() - _t0) * 1000, len(texts), model_name)
 
-    # Use admin user (id=1) as the config owner
-    try:
-        cfg = await get_embedding_config(1)
-        if cfg:
-            api_key = cfg["api_key"]
-            model_name = cfg["model_name"]
-            api_url = cfg["base_url"]
-    except Exception:
-        api_key = s.api_key
-        model_name = s.model_name
-    logger.info("Embedding timing: config ready in %.0fms, sending %d texts",
-                (time.perf_counter() - _t0) * 1000, len(texts))
+    if card is not None:
+        use_native = card.api.request_format == ApiFormat.DASHSCOPE
+    else:
+        use_native = "dashscope" in (api_url or "") or not api_url
 
-    # Determine API format based on model
-    if "dashscope" in api_url or not api_url:
-        api_url = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+    # 维度优先级：配置 parameters.dimensions > 卡片默认 > .env 默认
+    dimension = (cfg.get("parameters") or {}).get("dimensions")
+    if not dimension and card and card.dimensions:
+        dimension = card.dimensions[0]
+    if not dimension:
+        dimension = settings.embedding.dimensions
+
+    if use_native:
+        endpoint = (card.api.endpoint if card else None) or (
+            "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+        )
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                api_url,
+                endpoint,
                 json={
                     "model": model_name,
                     "input": {"texts": texts},
-                    "parameters": {"dimension": s.dimensions},
+                    "parameters": {"dimension": dimension},
                 },
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             )
@@ -59,22 +80,28 @@ async def _embed_texts(texts: List[str], user_id: int = None) -> List[List[float
             embeddings = body.get("output", {}).get("embeddings", [])
             embeddings.sort(key=lambda d: d.get("text_index", 0))
             return [e["embedding"] for e in embeddings]
-    else:
-        # OpenAI-compatible API
-        api_url = api_url.rstrip("/") + "/embeddings"
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                api_url,
-                json={"model": model_name, "input": texts},
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            )
+
+    # OpenAI-compatible API：data[] 按 index 排序（此前误按 dashscope 的
+    # output.embeddings/text_index 解析，非 dashscope 端点必崩 IndexError）
+    url = (api_url or settings.embedding.base_url).rstrip("/") + "/embeddings"
+    payload = {"model": model_name, "input": texts}
+    # 支持 dimensions 的模型（如 text-embedding-3-*）需显式传维度，
+    # 否则 API 返回默认维度，与激活校验所选维度不一致导致检索失效
+    if dimension and card is not None and card.api.dimension_param:
+        payload["dimensions"] = dimension
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
         if resp.status_code != 200:
             logger.error("Embedding API error: %s %s", resp.status_code, resp.text[:500])
             raise RuntimeError(f"Embedding API returned {resp.status_code}: {resp.text[:200]}")
         body = resp.json()
-        embeddings = body.get("output", {}).get("embeddings", [])
-        embeddings.sort(key=lambda d: d.get("text_index", 0))
-        return [e["embedding"] for e in embeddings]
+        items = body.get("data") or []
+        items.sort(key=lambda d: d.get("index", 0))
+        return [e["embedding"] for e in items]
 
 
 @dataclass
@@ -186,8 +213,16 @@ class PgVectorRetrievalAdapter:
         metadatas = [doc.metadata for doc in documents]
         collection_id = uuid.uuid4()
 
-        # text-embedding-v4 limits batch size to 10 (configurable via INGESTION_VECTOR_ADD_BATCH_SIZE)
-        batch_size = max(1, min(settings.ingestion.vector_add_batch_size, 10))
+        # 批大小上限以模型卡片 batch_limit 为准（如 text-embedding-v4 限 10），
+        # 兜底 settings.ingestion.vector_add_batch_size
+        batch_limit = 10
+        try:
+            _, card = await _resolve_embedding()
+            if card and card.batch_limit:
+                batch_limit = card.batch_limit
+        except Exception:
+            pass
+        batch_size = max(1, min(settings.ingestion.vector_add_batch_size, batch_limit))
         all_vectors = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]

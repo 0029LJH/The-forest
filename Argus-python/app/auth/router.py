@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.schemas import LoginRequest, RegisterRequest, AuthTokensResponse, CurrentUserProfile
+from app.auth.schemas import LoginRequest, RegisterRequest, RefreshRequest, AuthTokensResponse, CurrentUserProfile
 from app.auth.service import AuthService
 from app.auth.dependencies import get_current_user
 from app.common.response import ApiResponse
@@ -35,8 +35,17 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/refresh")
-async def refresh(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
-    refresh_token = request.cookies.get(settings.auth.refresh_cookie_name)
+async def refresh(request: Request, response: Response,
+                  body: RefreshRequest | None = None,
+                  db: AsyncSession = Depends(get_db)):
+    # 账号切换：body 直传的 refresh token 优先（cookie 只属于最后登录的
+    # 账号，不能用于续期其他账号的会话）。轮换后的新 token 同样写入
+    # cookie —— 切换成功后该账号即成为当前活跃会话。
+    refresh_token = (
+        body.refresh_token
+        if body and body.refresh_token
+        else request.cookies.get(settings.auth.refresh_cookie_name)
+    )
     service = AuthService(db)
     result = await service.refresh(refresh_token)
     _set_refresh_cookie(response, result["refresh_token"])

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 
@@ -277,9 +278,10 @@ class AssistantService:
         import asyncio
         asyncio.create_task(self._auto_title_async(session_id, user_id, message, result.get("reply", "")))
 
-        # Record estimated LLM usage (agent internals don't expose real token counts)
+        # Record LLM usage (real counts from ainvoke response, fallback estimated)
         await self._record_usage(user_id, group_id, session_id, "/api/assistant/chat",
-                                 instruction + "\n" + message, result.get("reply", ""))
+                                 instruction + "\n" + message, result.get("reply", ""),
+                                 real_usage=result.get("usage"))
 
         return {
             "session_id": session_id,
@@ -309,61 +311,82 @@ class AssistantService:
         full_reply = ""
         tool_calls = []
         citations = []
-        interrupted = False
+        confirmation_pending = False
+        done_reason = "completed"
+        real_usage = None
+        assistant_msg: Optional[AssistantMessage] = None
 
-        async for ev in facade.chat_stream(instruction, message, tool_mode, group_id, thread_id,
-                                           user_id, system_role, user_code, resume):
-            if ev["event"] == "delta":
-                full_reply += ev["data"]
-                yield ev
-            elif ev["event"] == "confirmation":
-                interrupted = True
-                yield ev
-            elif ev["event"] == "done":
-                tool_calls = ev["data"].get("tool_calls", [])
-                citations = ev["data"].get("citations", [])
-            else:
-                yield ev  # tool_start / tool_end 透传给前端
+        try:
+            async for ev in facade.chat_stream(instruction, message, tool_mode, group_id, thread_id,
+                                               user_id, system_role, user_code, resume):
+                if ev["event"] == "delta":
+                    full_reply += ev["data"]
+                    yield ev
+                elif ev["event"] == "confirmation":
+                    confirmation_pending = True
+                    yield ev
+                elif ev["event"] == "done":
+                    tool_calls = ev["data"].get("tool_calls", [])
+                    citations = ev["data"].get("citations", [])
+                    done_reason = ev["data"].get("reason", "completed")
+                    real_usage = ev["data"].get("usage")
+                else:
+                    yield ev  # tool_start / tool_end 透传给前端
+        except asyncio.CancelledError:
+            # 用户停止生成：保留部分回答并落库（GeneratorExit 也会走到 finally）
+            done_reason = "interrupted"
+        finally:
+            if not confirmation_pending:
+                # Save tool-call messages before the assistant reply
+                self._save_tool_messages(session_id, tool_mode, tool_calls)
+                payload = {}
+                if citations:
+                    payload["citations"] = citations
+                if done_reason == "interrupted":
+                    payload["interrupted"] = True
+                assistant_msg = AssistantMessage(
+                    session_id=session_id, role="ASSISTANT", tool_mode=tool_mode,
+                    content=full_reply,
+                    structured_payload=payload or None,
+                )
+                self.session.add(assistant_msg)
+                await self.session.execute(
+                    update(AssistantSession)
+                    .where(AssistantSession.id == session_id)
+                    .values(last_message_at=utcnow(),
+                            updated_at=utcnow())
+                )
+                await self.session.flush()
 
-        if interrupted:
+        if confirmation_pending:
             # 首次流被 interrupt 暂停：不落空 ASSISTANT 消息，
             # 等待用户确认后的恢复流再落库（USER 消息已保存）
             return
 
-        # Save tool-call messages before the assistant reply
-        self._save_tool_messages(session_id, tool_mode, tool_calls)
+        # 完整 done 事件：reply/citations/messageId/reason（此前 router 补发的
+        # done 为空，导致前端引用栏永不显示、messageId 恒空）
+        try:
+            yield {"event": "done", "data": {
+                "reply": full_reply,
+                "citations": citations,
+                "messageId": assistant_msg.id if assistant_msg else None,
+                "reason": done_reason,
+            }}
+        except Exception:
+            # 中断场景下客户端可能已断开，done 发不出去不影响落库
+            return
 
-        # Save assistant message
-        assistant_msg = AssistantMessage(
-            session_id=session_id, role="ASSISTANT", tool_mode=tool_mode,
-            content=full_reply,
-            structured_payload={"citations": citations} if citations else None,
-        )
-        self.session.add(assistant_msg)
-
-        await self.session.execute(
-            update(AssistantSession)
-            .where(AssistantSession.id == session_id)
-            .values(last_message_at=utcnow(),
-                    updated_at=utcnow())
-        )
-        await self.session.flush()
-
-        # 完整 done 事件：reply/citations/messageId（此前 router 补发的 done 为空，
-        # 导致前端引用栏永不显示、messageId 恒空）
-        yield {"event": "done", "data": {
-            "reply": full_reply,
-            "citations": citations,
-            "messageId": assistant_msg.id,
-        }}
+        if done_reason == "interrupted":
+            return
 
         # Auto-title (fire-and-forget, non-critical, with its own session)
         import asyncio as _asyncio
         _asyncio.create_task(self._auto_title_async(session_id, user_id, message, full_reply))
 
-        # Record estimated LLM usage
+        # Record LLM usage (real counts from stream, fallback estimated)
         await self._record_usage(user_id, group_id, session_id, "/api/assistant/chat/stream",
-                                 instruction + "\n" + message, full_reply)
+                                 instruction + "\n" + message, full_reply,
+                                 real_usage=real_usage)
 
     async def _ensure_session(self, user_id: int, session_id: Optional[int]) -> int:
         if session_id:
@@ -435,13 +458,24 @@ class AssistantService:
         return "\n".join(parts)
 
     async def _record_usage(self, user_id: int, group_id: Optional[int], session_id: int,
-                            endpoint: str, prompt_text: str, completion_text: str) -> None:
-        """Record estimated LLM usage for an assistant call (non-critical)."""
+                            endpoint: str, prompt_text: str, completion_text: str,
+                            real_usage: Optional[dict] = None) -> None:
+        """Record LLM usage for an assistant call (non-critical).
+
+        real_usage 为流式末 chunk / ainvoke 响应提取的真实用量
+        {input_tokens, output_tokens}；缺失时回退字符数估算。
+        """
         try:
             from app.models_config.resolver import get_chat_config
             chat_cfg = await get_chat_config(user_id)
-            prompt_tokens = estimate_tokens(prompt_text)
-            completion_tokens = estimate_tokens(completion_text)
+            if real_usage:
+                prompt_tokens = real_usage["input_tokens"]
+                completion_tokens = real_usage["output_tokens"]
+                is_estimated = False
+            else:
+                prompt_tokens = estimate_tokens(prompt_text)
+                completion_tokens = estimate_tokens(completion_text)
+                is_estimated = True
             collector = LlmUsageCollector(self.session)
             await collector.record(
                 user_id=user_id,
@@ -453,7 +487,7 @@ class AssistantService:
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
                 success=True,
-                is_estimated=True,
+                is_estimated=is_estimated,
                 model_name=chat_cfg["model_name"],
             )
             await self.session.flush()
@@ -463,18 +497,14 @@ class AssistantService:
     async def _auto_title_async(self, session_id: int, user_id: int, user_msg: str, assistant_reply: str):
         try:
             from app.dependencies import async_session_factory
-            from app.models_config.resolver import get_chat_config
+            from app.models_config.fallback import build_chat_model_with_fallback
             async with async_session_factory() as db:
                 result = await db.execute(
                     select(AssistantSession.title).where(AssistantSession.id == session_id)
                 )
                 current_title = result.scalar_one_or_none()
                 if not current_title or current_title == "新会话":
-                    chat_cfg = await get_chat_config(user_id)
-                    model = ChatOpenAI(
-                        model=chat_cfg["model_name"], openai_api_key=chat_cfg["api_key"],
-                        openai_api_base=chat_cfg["base_url"], temperature=0.3, max_tokens=16,
-                    )
+                    model = await build_chat_model_with_fallback(user_id, temperature=0.3, max_tokens=16)
                     prompt = f"根据对话生成2-6字标题，直接输出：\n用户：{user_msg[:100]}\n助手：{assistant_reply[:200]}\n标题："
                     resp = await model.ainvoke([HumanMessage(content=prompt)])
                     title = resp.content.strip()[:12]

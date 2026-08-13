@@ -116,6 +116,12 @@ const router = createRouter({
           meta: { title: 'API 令牌', requireAdmin: true },
         },
         {
+          path: 'admin/models',
+          name: 'admin-models',
+          component: () => import('../views/admin/ModelManagementView.vue'),
+          meta: { title: '模型管理', requireAdmin: true },
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('../views/settings/SettingsView.vue'),

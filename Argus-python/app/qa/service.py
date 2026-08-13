@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -14,7 +15,7 @@ from app.qa.models import QaSession, QaMessage
 from app.qa.query_planning import QueryPlanningService, EvidenceLevel
 from app.qa.retrieval import HybridChunkRetrievalService, RetrievedEvidenceBundle
 from app.qa.citation import CitationAssembler
-from app.metrics.collector import LlmUsageCollector, estimate_tokens
+from app.metrics.collector import LlmUsageCollector, estimate_tokens, extract_usage_from_chunk
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +57,14 @@ class QaService:
 
         # LLM generation — use active model config if available
         from app.models_config.resolver import get_chat_config
+        from app.models_config.fallback import build_chat_model_with_fallback
         chat_cfg = await get_chat_config(user_id)
-        chat_model = ChatOpenAI(
-            model=chat_cfg["model_name"],
-            openai_api_key=chat_cfg["api_key"],
-            openai_api_base=chat_cfg["base_url"],
-            temperature=settings.chat.temperature,
-            max_tokens=2048,
+        params = chat_cfg.get("parameters") or {}
+        chat_model = await build_chat_model_with_fallback(
+            user_id,
+            streaming=False,
+            temperature=params.get("temperature", settings.chat.temperature),
+            max_tokens=params.get("max_tokens", 2048),
         )
 
         system_msg = """你是一个知识库智能助手，必须严格基于下方提供的证据内容回答问题。证据中的每条信息都是真实可靠的，直接引用证据中的具体内容来回答，不要自己编造或说"资料中没有"。不要在答案中写"证据E1"之类的编号。如果没有提供任何证据或证据等级为NONE，才可以说找不到相关信息。
@@ -97,6 +99,7 @@ class QaService:
             SystemMessage(content=system_msg),
             HumanMessage(content=user_msg),
         ])
+        real_usage = extract_usage_from_chunk(response)
 
         # Parse delimiter-based response format
         raw = response.content.strip()
@@ -124,7 +127,7 @@ class QaService:
             await self._persist_session(user_id, group_id, question, "", [], reason_code, reason_message,
                                         session_id=session_id,
                                         evidence_level=bundle.evidence_level.value)
-            await self._record_usage(user_id, group_id, "qa", "/api/qa/ask", 0, 0, True)
+            await self._record_usage(user_id, group_id, "qa", "/api/qa/ask", 0, 0, True, is_estimated=False)
             return {
                 "answered": False,
                 "answer": None,
@@ -136,9 +139,14 @@ class QaService:
         await self._persist_session(user_id, group_id, question, answer, formatted_citations,
                                     None, None, thinking, session_id=session_id,
                                     evidence_level=bundle.evidence_level.value)
-        await self._record_usage(user_id, group_id, "qa", "/api/qa/ask",
-            estimate_tokens(evidence_text), estimate_tokens(answer), True,
-            model_name=chat_cfg["model_name"])
+        if real_usage:
+            await self._record_usage(user_id, group_id, "qa", "/api/qa/ask",
+                real_usage["input_tokens"], real_usage["output_tokens"], True,
+                model_name=chat_cfg["model_name"], is_estimated=False)
+        else:
+            await self._record_usage(user_id, group_id, "qa", "/api/qa/ask",
+                estimate_tokens(evidence_text), estimate_tokens(answer), True,
+                model_name=chat_cfg["model_name"])
         return {
             "answered": True,
             "answer": answer,
@@ -201,7 +209,8 @@ class QaService:
 
     async def _record_usage(self, user_id: int, group_id: int, module: str,
                             endpoint: str, prompt_tokens: int, completion_tokens: int,
-                            success: bool, model_name: Optional[str] = None):
+                            success: bool, model_name: Optional[str] = None,
+                            is_estimated: bool = True):
         from app.dependencies import async_session_factory
         try:
             async with async_session_factory() as session:
@@ -211,7 +220,7 @@ class QaService:
                     endpoint=endpoint, prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=prompt_tokens + completion_tokens,
-                    success=success, is_estimated=True,
+                    success=success, is_estimated=is_estimated,
                     model_name=model_name or settings.chat.model_name,
                 )
                 await session.commit()
@@ -266,7 +275,7 @@ class QaService:
             await self._persist_session(user_id, group_id, question, "", [], "NO_EVIDENCE",
                                         "未检索到相关文档", session_id=session_id,
                                         evidence_level=bundle.evidence_level.value)
-            await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask", 0, 0, True)
+            await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask", 0, 0, True, is_estimated=False)
             yield {"event": "citations", "data": json.dumps({
                 "citations": [],
                 "thinking": "",
@@ -279,14 +288,14 @@ class QaService:
 
         # LLM generation with streaming — use active model config if available
         from app.models_config.resolver import get_chat_config
+        from app.models_config.fallback import build_chat_model_with_fallback
         chat_cfg = await get_chat_config(user_id)
-        chat_model = ChatOpenAI(
-            model=chat_cfg["model_name"],
-            openai_api_key=chat_cfg["api_key"],
-            openai_api_base=chat_cfg["base_url"],
-            temperature=settings.chat.temperature,
+        params = chat_cfg.get("parameters") or {}
+        chat_model = await build_chat_model_with_fallback(
+            user_id,
             streaming=True,
-            max_tokens=2048,
+            temperature=params.get("temperature", settings.chat.temperature),
+            max_tokens=params.get("max_tokens", 2048),
         )
 
         system_msg = """你是一个知识库智能助手，必须严格基于下方提供的证据内容回答问题。证据中的每条信息都是真实可靠的，直接引用证据中的具体内容来回答，不要自己编造或说"资料中没有"。不要在答案中写"证据E1"之类的编号。如果没有提供任何证据或证据等级为NONE，才可以说找不到相关信息。
@@ -318,19 +327,27 @@ class QaService:
         full_content = ""
         tail_text = ""
         stream_failed = False
+        interrupted = False
         thinking_text = ""
         persisted_citations = []
+        real_usage = None
         try:
             async for chunk in chat_model.astream([
                 SystemMessage(content=system_msg),
                 HumanMessage(content=user_msg),
             ]):
+                usage = extract_usage_from_chunk(chunk)
+                if usage:
+                    real_usage = usage  # 末 chunk（空 content）携带真实用量
                 if chunk.content:
                     full_content += chunk.content
                     delta = parser.push(chunk.content)
                     if delta:
                         answer_text += delta
                         yield {"event": "token", "data": json.dumps({"text": delta})}
+        except asyncio.CancelledError:
+            # 用户主动停止（前端 AbortController）：部分答案仍要落库
+            interrupted = True
         except Exception as e:
             # GeneratorExit (client disconnect) is a BaseException, so it does
             # not land here — it propagates and only runs the finally block.
@@ -363,15 +380,35 @@ class QaService:
                         "snippet": c.get("snippet"),
                     })
             await self._persist_session(user_id, group_id, question, answer_text,
-                                        persisted_citations, None, None, thinking_text,
+                                        persisted_citations,
+                                        "INTERRUPTED" if interrupted else None,
+                                        "已停止生成" if interrupted else None,
+                                        thinking_text,
                                         session_id=session_id,
                                         evidence_level=bundle.evidence_level.value)
-            await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask",
-                estimate_tokens(evidence_text), estimate_tokens(answer_text),
-                success=not stream_failed,
-                model_name=chat_cfg["model_name"])
+            if real_usage:
+                await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask",
+                    real_usage["input_tokens"], real_usage["output_tokens"],
+                    success=not stream_failed,
+                    model_name=chat_cfg["model_name"], is_estimated=False)
+            else:
+                await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask",
+                    estimate_tokens(evidence_text), estimate_tokens(answer_text),
+                    success=not stream_failed,
+                    model_name=chat_cfg["model_name"])
 
         if stream_failed:
+            return
+
+        if interrupted:
+            # 客户端可能已断开，done 发不出去就静默放弃（落库已完成）
+            try:
+                yield {"event": "done", "data": json.dumps({
+                    "elapsed_ms": int((time.perf_counter() - start_time) * 1000),
+                    "reason": "interrupted",
+                })}
+            except Exception:
+                pass
             return
 
         if tail_text:
@@ -385,7 +422,7 @@ class QaService:
                })}
 
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-        yield {"event": "done", "data": json.dumps({"elapsed_ms": elapsed_ms})}
+        yield {"event": "done", "data": json.dumps({"elapsed_ms": elapsed_ms, "reason": "completed"})}
 
 
 class StreamingAnswerParser:

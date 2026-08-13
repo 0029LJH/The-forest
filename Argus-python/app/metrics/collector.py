@@ -26,6 +26,34 @@ def estimate_tokens(text: str) -> int:
     return int(len(text or "") / CHARS_PER_TOKEN)
 
 
+def extract_usage_from_chunk(chunk) -> Optional[dict]:
+    """从流式 chunk 或完整 AIMessage 提取真实 token 用量。
+
+    流式时需模型开启 ``stream_options={"include_usage": True}``，
+    用量出现在该次调用的最后一个 chunk（通常是空 content 的终止块）。
+    返回 ``{"input_tokens": ..., "output_tokens": ...}``，取不到返回 None。
+    """
+    usage = getattr(chunk, "usage_metadata", None) or {}
+    if usage.get("input_tokens") is None and usage.get("output_tokens") is None:
+        rm = getattr(chunk, "response_metadata", None) or {}
+        usage = rm.get("usage") or rm.get("token_usage") or {}
+    if not usage:
+        return None
+
+    def _pick(*keys):
+        for k in keys:
+            v = usage.get(k)
+            if v is not None:
+                return int(v)
+        return None
+
+    input_tokens = _pick("input_tokens", "prompt_tokens")
+    output_tokens = _pick("output_tokens", "completion_tokens")
+    if input_tokens is None or output_tokens is None:
+        return None
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
 class LlmUsageCollector:
     def __init__(self, session: AsyncSession):
         self.session = session

@@ -1,0 +1,27 @@
+name: qwen-long
+label: Qwen Long
+provider: dashscope
+kind: chat
+status: active
+description: 阿里云超长上下文模型（10M）
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+context_size: 10000000
+output_size: 8192
+parameters:
+  temperature:
+    type: number
+    title: 采样温度
+    description: 越高回答越随机，越低越确定
+    default: 0.7
+    minimum: 0
+    maximum: 2
+  max_tokens:
+    type: integer
+    title: 最大输出 Token
+    description: 单次回答的最大 token 数
+    default: 4096
+    minimum: 1
+    maximum: 8192

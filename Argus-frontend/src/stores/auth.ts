@@ -19,6 +19,7 @@ const BUSINESS_PATH_PREFIXES = ['/app/groups', '/app/documents', '/app/qa', '/ap
 
 interface AuthState {
   accessToken: string | null
+  refreshToken: string | null
   currentUser: CurrentUserProfile | null
   isBootstrapping: boolean
   isAuthenticating: boolean
@@ -29,6 +30,7 @@ let bootstrapTask: Promise<CurrentUserProfile | null> | null = null
 export const useAuthStore = defineStore('auth', {
   state: (): AuthState => ({
     accessToken: null,
+    refreshToken: null,
     currentUser: null,
     isBootstrapping: false,
     isAuthenticating: false,
@@ -66,7 +68,7 @@ export const useAuthStore = defineStore('auth', {
     },
     async refresh(): Promise<CurrentUserProfile> {
       const session = await refreshSession()
-      this.setSession(session.accessToken, session.currentUser)
+      this.setSession(session.accessToken, session.currentUser, session.refreshToken)
       return session.currentUser
     },
     async login(payload: LoginPayload): Promise<CurrentUserProfile> {
@@ -76,7 +78,7 @@ export const useAuthStore = defineStore('auth', {
           loginId: payload.loginId.trim(),
           password: payload.password,
         })
-        this.setSession(session.accessToken, session.currentUser)
+        this.setSession(session.accessToken, session.currentUser, session.refreshToken)
         return session.currentUser
       } finally {
         this.isAuthenticating = false
@@ -118,13 +120,15 @@ export const useAuthStore = defineStore('auth', {
     },
     clearSession() {
       this.accessToken = null
+      this.refreshToken = null
       this.currentUser = null
       applyAuthorizationHeader(null)
       localStorage.removeItem('argus_access_token')
       localStorage.removeItem('argus_current_user_id')
     },
-    setSession(accessToken: string, currentUser: CurrentUserProfile) {
+    setSession(accessToken: string, currentUser: CurrentUserProfile, refreshToken: string | null = null) {
       this.accessToken = accessToken
+      this.refreshToken = refreshToken
       this.currentUser = currentUser
       applyAuthorizationHeader(accessToken)
       localStorage.setItem('argus_access_token', accessToken)
@@ -136,6 +140,7 @@ export const useAuthStore = defineStore('auth', {
           displayName: string
           systemRole: string
           accessToken: string
+          refreshToken: string
           userCode: string
           mustChangePassword: boolean
         }>
@@ -145,6 +150,7 @@ export const useAuthStore = defineStore('auth', {
           displayName: currentUser.displayName,
           systemRole: currentUser.systemRole,
           accessToken,
+          refreshToken: refreshToken ?? '',
           userCode: currentUser.userCode ?? '',
           mustChangePassword: currentUser.mustChangePassword ?? false,
         })

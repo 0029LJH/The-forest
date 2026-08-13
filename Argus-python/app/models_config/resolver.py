@@ -20,6 +20,8 @@ async def get_chat_config(user_id: int) -> dict:
         "base_url": settings.chat.base_url,
         "api_key": settings.chat.api_key,
         "model_name": settings.chat.model_name,
+        "api_format": "openai",
+        "parameters": {},
     }
 
 
@@ -40,6 +42,7 @@ async def get_embedding_config(user_id: int) -> dict:
         "base_url": settings.embedding.base_url,
         "api_key": settings.embedding.api_key,
         "model_name": settings.embedding.model_name,
+        "parameters": {},
     }
 
 

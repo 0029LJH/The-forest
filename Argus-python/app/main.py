@@ -169,12 +169,32 @@ async def _init_database(engine):
         await conn.execute(text(
             "ALTER TABLE assistant_sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(32) DEFAULT 'CHAT'"
         ))
+        await conn.execute(text(
+            "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS parameters JSON"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS fallback_config_id INTEGER"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS api_format VARCHAR(16)"
+        ))
 
     # pgvector table + HNSW/GIN indexes — ensure before the first QA request
     # can hit them (previously only created lazily during ingestion, so a
     # fresh database 500'd on the first QA attempt)
     from app.engine.vector_store import PgVectorRetrievalAdapter
     await PgVectorRetrievalAdapter(settings.database_url).ensure_table()
+
+    # 模型卡片注册表：校验 .env 默认模型是否已注册（未注册的模型格式按 URL 推断）
+    from app.models_config.cards import load_cards, get_card
+    load_cards()
+    for default_name, kind in [(settings.chat.model_name, "chat"),
+                               (settings.embedding.model_name, "embedding")]:
+        card = get_card(default_name)
+        if card is None or card.kind.value != kind:
+            logger.warning(
+                "Default %s model '%s' is not registered as a model card; "
+                "API format will be inferred from base_url", kind, default_name)
     logger.info("Database tables initialized")
 
 

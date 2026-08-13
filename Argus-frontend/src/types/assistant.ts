@@ -265,8 +265,8 @@ export interface AssistantToolCall {
   args: string
   /** 结果摘要（截断 500 字，tool_end 时才有） */
   result?: string
-  /** 执行状态：pending / success / failed */
-  status: 'pending' | 'success' | 'failed'
+  /** 执行状态：typing（参数流式生成中）/ pending / success / failed */
+  status: 'typing' | 'pending' | 'success' | 'failed'
 }
 
 export interface AssistantConfirmation {
@@ -285,8 +285,8 @@ export interface AssistantConfirmation {
 }
 
 export interface AssistantChatStreamEvent {
-  /** 事件类型：start / delta / tool_start / tool_end / confirmation / done / error */
-  event: 'start' | 'delta' | 'tool_start' | 'tool_end' | 'confirmation' | 'done' | 'error'
+  /** 事件类型：start / delta / tool_start / tool_end / tool_input_delta / confirmation / done / error */
+  event: 'start' | 'delta' | 'tool_start' | 'tool_end' | 'tool_input_delta' | 'confirmation' | 'done' | 'error'
   /** 会话 ID */
   sessionId: number
   /** 本轮回合使用的工具模式 */
@@ -299,14 +299,20 @@ export interface AssistantChatStreamEvent {
   messageId: number | null
   /** 完整回复文本（仅 done 事件有值） */
   reply: string | null
+  /** 结束原因（仅 done 事件有值）：completed / interrupted */
+  reason?: string | null
   /** 引用列表（done 事件时包含全部引用） */
   citations: AssistantCitationItem[]
   /** 工具调用 ID（仅 tool_start / tool_end 事件有值，后端顶层字段） */
   id?: string | null
-  /** 工具名（仅 tool_start / tool_end 事件有值） */
+  /** 工具名（仅 tool_start / tool_end / tool_input_delta 事件有值） */
   name?: string | null
   /** 参数摘要（仅 tool_start / tool_end 事件有值） */
   args?: string | null
+  /** 参数分片流 key（仅 tool_input_delta 事件有值，如 llm_0） */
+  streamKey?: string | null
+  /** 参数分片增量（仅 tool_input_delta 事件有值，逐片追加） */
+  argsDelta?: string | null
   /** 结果摘要（仅 tool_end 事件有值） */
   result?: string | null
   /** 执行状态（仅 tool_end 事件有值）：success / failed */

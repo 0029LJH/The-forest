@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -6,6 +7,7 @@ from typing import AsyncIterator, Optional
 from langchain_core.messages import HumanMessage
 
 from app.assistant.agent.factory import AssistantAgentFactory, ResultHolder
+from app.metrics.collector import extract_usage_from_chunk
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,24 @@ def _truncate(obj, limit: int) -> str:
         except TypeError:
             s = str(obj)
     return s[:limit] + ("..." if len(s) > limit else "")
+
+
+def _sum_usage_from_messages(messages) -> Optional[dict]:
+    """求和本轮新产生的 AI 消息用量（最后一个 human 消息之后的部分）。
+
+    langgraph 状态累积全量历史消息，不能全量求和（会重复计入历史轮次）。
+    """
+    total = None
+    for msg in reversed(messages):
+        if getattr(msg, "type", "") == "human":
+            break
+        usage = extract_usage_from_chunk(msg)
+        if usage:
+            if total is None:
+                total = {"input_tokens": 0, "output_tokens": 0}
+            total["input_tokens"] += usage["input_tokens"]
+            total["output_tokens"] += usage["output_tokens"]
+    return total
 
 
 def _agent_config(thread_id: str, group_id: Optional[int], result_holder: ResultHolder,
@@ -66,6 +86,7 @@ async def chat_sync(
             "citations": result_holder.current_citations,
             "thinking": "",
             "tool_calls": result_holder.tool_calls,
+            "usage": None,
         }
 
     reply = ""
@@ -78,6 +99,7 @@ async def chat_sync(
         "citations": result_holder.current_citations,
         "thinking": result_holder.thinking,
         "tool_calls": result_holder.tool_calls,
+        "usage": _sum_usage_from_messages(result.get("messages", [])),
     }
 
 
@@ -117,6 +139,8 @@ async def chat_stream(
         graph_input = {"messages": [HumanMessage(content=user_message)]}
 
     full_reply = ""
+    interrupted = False
+    usage_by_run: dict = {}  # run_id -> {input_tokens, output_tokens}
     try:
         async for event in agent.astream_events(
             graph_input,
@@ -126,6 +150,13 @@ async def chat_stream(
             kind = event.get("event", "")
             if kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk")
+                if chunk is not None:
+                    usage = extract_usage_from_chunk(chunk)
+                    if usage:
+                        # 同一次模型调用共享 run_id（末 chunk 携带用量，
+                        # last-wins）；工具循环多次调用则求和
+                        run_key = event.get("run_id") or f"llm_{len(usage_by_run)}"
+                        usage_by_run[run_key] = usage
                 if chunk and chunk.content:
                     delta = chunk.content
                     # Dedup prefix
@@ -134,6 +165,28 @@ async def chat_stream(
                     if delta:
                         full_reply += delta
                         yield {"event": "delta", "data": delta}
+                # 工具参数分片（LLM 流式生成 tool_call 时逐片输出参数，
+                # 借鉴 AgentScope 按 block 累积的思路：前端打字机式渲染）。
+                # 注意 tool_call_chunks 的元素是 dict（ToolCallChunk 是
+                # TypedDict，不是带属性的对象）——getattr 取不到任何字段。
+                if chunk is not None:
+                    for i, tc in enumerate(getattr(chunk, "tool_call_chunks", None) or []):
+                        if isinstance(tc, dict):
+                            name = tc.get("name") or ""
+                            args = tc.get("args") or ""
+                            idx = tc.get("index")
+                        else:
+                            name = getattr(tc, "name", None) or ""
+                            args = getattr(tc, "args", None) or ""
+                            idx = getattr(tc, "index", None)
+                        if not name and not args:
+                            continue
+                        stream_key = f"llm_{idx}" if idx is not None else f"llm_{i}"
+                        yield {"event": "tool_input_delta", "data": {
+                            "streamKey": stream_key,
+                            "name": name,
+                            "argsDelta": args,
+                        }}
             elif kind == "on_tool_start":
                 tool_name = event.get("name", "")
                 tool_input = event.get("data", {}).get("input") or {}
@@ -196,12 +249,15 @@ async def chat_stream(
                     "result": error,
                     "status": "failed",
                 }}
+    except asyncio.CancelledError:
+        # 用户停止生成：部分内容由 service 层落库，done 事件带 reason
+        interrupted = True
     except Exception as e:
         logger.error("Agent stream error: %s", e)
 
     # 首次请求：检测写工具是否被 interrupt 暂停（图进入 human-in-the-loop）。
     # langgraph 1.2 中断信息在 state.tasks[].interrupts（不在 state.values）
-    if resume is None:
+    if resume is None and not interrupted:
         try:
             state = await agent.aget_state(config)
             interrupts = []
@@ -224,7 +280,14 @@ async def chat_stream(
             logger.warning("Interrupt detection failed: %s", e)
 
     result_holder.reply = full_reply
-    yield {"event": "done", "data": {
+    done_data = {
         "tool_calls": result_holder.tool_calls,
         "citations": result_holder.current_citations,
-    }}
+        "reason": "interrupted" if interrupted else "completed",
+    }
+    if usage_by_run:
+        done_data["usage"] = {
+            "input_tokens": sum(u["input_tokens"] for u in usage_by_run.values()),
+            "output_tokens": sum(u["output_tokens"] for u in usage_by_run.values()),
+        }
+    yield {"event": "done", "data": done_data}

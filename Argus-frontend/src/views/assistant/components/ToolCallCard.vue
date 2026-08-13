@@ -59,11 +59,18 @@ function formatResult(result: string | undefined): string {
     :class="{
       'tcc--write': isWrite,
       'tcc--failed': call.status === 'failed',
+      'tcc--typing': call.status === 'typing',
     }"
   >
     <button class="tcc__head" type="button" @click="expanded = !expanded">
       <span class="tcc__icon">
-        <template v-if="call.status === 'pending'">
+        <template v-if="call.status === 'typing'">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+          </svg>
+        </template>
+        <template v-else-if="call.status === 'pending'">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
@@ -82,7 +89,8 @@ function formatResult(result: string | undefined): string {
         </template>
       </span>
       <span class="tcc__name">{{ toolLabel }}</span>
-      <span v-if="call.status === 'pending'" class="tcc__pending">执行中…</span>
+      <span v-if="call.status === 'typing'" class="tcc__pending">生成参数…</span>
+      <span v-else-if="call.status === 'pending'" class="tcc__pending">执行中…</span>
       <span v-else-if="call.status === 'failed'" class="tcc__badge tcc__badge--fail">失败</span>
       <span v-else-if="isWrite" class="tcc__badge tcc__badge--write">写操作</span>
       <svg class="tcc__chevron" :class="{ open: expanded }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -93,9 +101,11 @@ function formatResult(result: string | undefined): string {
     <div v-if="expanded" class="tcc__body">
       <div v-if="call.args" class="tcc__block">
         <span class="tcc__block-label">参数</span>
-        <pre class="tcc__code">{{ formatArgs(call.args) }}</pre>
+        <pre class="tcc__code" :class="{ 'tcc__code--typing': call.status === 'typing' }">
+          {{ formatArgs(call.args) }}{{ call.status === 'typing' ? '▌' : '' }}
+        </pre>
       </div>
-      <div v-if="call.status !== 'pending'" class="tcc__block">
+      <div v-if="call.status !== 'pending' && call.status !== 'typing'" class="tcc__block">
         <span class="tcc__block-label" :class="{ 'tcc__block-label--fail': call.status === 'failed' }">
           {{ call.status === 'failed' ? '结果（失败）' : '结果' }}
         </span>
@@ -123,6 +133,12 @@ function formatResult(result: string | undefined): string {
 
 .tcc--failed {
   border-color: rgba(239, 68, 68, 0.4);
+}
+
+.tcc--typing {
+  border-style: dashed;
+  border-color: rgba(74, 144, 217, 0.45);
+  background: rgba(74, 144, 217, 0.02);
 }
 
 .tcc__head {
@@ -248,6 +264,10 @@ function formatResult(result: string | undefined): string {
   word-break: break-word;
   max-height: 200px;
   overflow-y: auto;
+}
+
+.tcc__code--typing {
+  color: var(--brand-primary);
 }
 
 .tcc__code--fail {

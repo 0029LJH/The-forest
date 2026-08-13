@@ -10,6 +10,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   submit: [text: string]
+  stop: []
 }>()
 
 const text = ref('')
@@ -94,22 +95,28 @@ defineExpose({ focus, setText })
             <span class="qa-composer__kbd-label">换行</span>
           </div>
           <button
+            v-if="loading"
+            class="qa-composer__send qa-composer__send--stop"
+            type="button"
+            @click="emit('stop')"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="5" y="5" width="14" height="14" rx="2" />
+            </svg>
+            <span>停止生成</span>
+          </button>
+          <button
+            v-else
             class="qa-composer__send"
             type="button"
-            :disabled="!text.trim() || disabled || loading"
+            :disabled="!text.trim() || disabled"
             @click="submit"
           >
-            <template v-if="loading">
-              <span class="qa-composer__spinner" />
-              <span>生成中</span>
-            </template>
-            <template v-else>
-              <span>发送</span>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="5" y1="12" x2="19" y2="12" />
-                <polyline points="12 5 19 12 12 19" />
-              </svg>
-            </template>
+            <span>发送</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12" />
+              <polyline points="12 5 19 12 12 19" />
+            </svg>
           </button>
         </div>
       </div>
@@ -283,6 +290,15 @@ defineExpose({ focus, setText })
   cursor: not-allowed;
   background: linear-gradient(135deg, #94a3b8, #64748b);
   box-shadow: none;
+}
+
+.qa-composer__send--stop {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);
+}
+
+.qa-composer__send--stop:hover:not(:disabled) {
+  box-shadow: 0 8px 18px rgba(239, 68, 68, 0.35);
 }
 
 .qa-composer__spinner {

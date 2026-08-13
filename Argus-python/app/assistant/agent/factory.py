@@ -5,7 +5,6 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.config import settings
 from app.assistant.agent.tools import knowledge_base_search, ADMIN_TOOLS, USER_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -30,14 +29,11 @@ class AssistantAgentFactory:
         self._memory = MemorySaver()
 
     async def _get_chat_model(self, user_id: int = 1) -> ChatOpenAI:
-        from app.models_config.resolver import get_chat_config
-        cfg = await get_chat_config(user_id)
-        return ChatOpenAI(
-            model=cfg["model_name"],
-            openai_api_key=cfg["api_key"],
-            openai_api_base=cfg["base_url"],
-            temperature=settings.chat.temperature,
-        )
+        # 带备用降级的聊天模型（主模型失败/首字节超时自动切换）。
+        # streaming=True 同时启用末 chunk 真实用量（include_usage），
+        # ainvoke 非流式调用不受影响。
+        from app.models_config.fallback import build_chat_model_with_fallback
+        return await build_chat_model_with_fallback(user_id, streaming=True)
 
     def create_agent(self, chat_model, instruction: str, tool_mode: str,
                      group_id: Optional[int], result_holder: ResultHolder):

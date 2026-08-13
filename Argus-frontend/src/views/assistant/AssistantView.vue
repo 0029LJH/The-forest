@@ -86,12 +86,16 @@ function localId(): string {
 
 function toUi(m: AssistantMessageItem): UiAssistantMessage {
   let citations: AssistantCitationItem[] = []
+  let interrupted = false
   try {
     // structured_payload 是 JSON 列，后端可能返回对象或字符串
     const payload =
       typeof m.structuredPayload === 'string' ? JSON.parse(m.structuredPayload) : m.structuredPayload
     if (payload && Array.isArray(payload.citations)) {
       citations = payload.citations
+    }
+    if (payload && payload.interrupted) {
+      interrupted = true
     }
   } catch {
     // malformed structuredPayload should never break rendering
@@ -105,6 +109,7 @@ function toUi(m: AssistantMessageItem): UiAssistantMessage {
     groupId: m.groupId,
     createdAt: m.createdAt,
     citations,
+    interrupted,
   }
 }
 
@@ -367,11 +372,7 @@ async function handleAsk(text: string) {
     if ((err as { name?: string })?.name === 'AbortError') {
       // User aborted — preserve whatever content we already have
       target.streaming = false
-      if (!target.content) {
-        target.content = '_(已中断)_'
-      } else {
-        target.content += '\n\n_(已中断)_'
-      }
+      target.interrupted = true
     } else {
       target.streaming = false
       target.failed = true
@@ -395,6 +396,24 @@ function onStreamEvent(ev: AssistantChatStreamEvent, target: UiAssistantMessage)
     case 'delta':
       if (ev.delta) target.content += ev.delta
       break
+    case 'tool_input_delta': {
+      // 参数打字机：LLM 流式输出工具参数分片，逐片累积到 typing 卡片
+      if (!target.toolCalls) target.toolCalls = []
+      const key = `pending-${ev.streamKey ?? 'x'}`
+      const existing = target.toolCalls.find((c) => c.id === key)
+      if (existing) {
+        if (ev.name) existing.name = ev.name
+        existing.args += ev.argsDelta ?? ''
+      } else {
+        target.toolCalls.push({
+          id: key,
+          name: ev.name ?? 'tool',
+          args: ev.argsDelta ?? '',
+          status: 'typing',
+        })
+      }
+      break
+    }
     case 'tool_start': {
       if (!target.toolCalls) target.toolCalls = []
       const call: AssistantToolCall = {
@@ -407,7 +426,13 @@ function onStreamEvent(ev: AssistantChatStreamEvent, target: UiAssistantMessage)
       if (existing) {
         Object.assign(existing, call)
       } else {
-        target.toolCalls.push(call)
+        // typing 卡片（参数分片流）→ 原地替换为权威参数
+        const typing = target.toolCalls.find((c) => c.status === 'typing')
+        if (typing) {
+          Object.assign(typing, call)
+        } else {
+          target.toolCalls.push(call)
+        }
       }
       break
     }
@@ -451,6 +476,7 @@ function onStreamEvent(ev: AssistantChatStreamEvent, target: UiAssistantMessage)
       }
       target.citations = ev.citations ?? []
       target.streaming = false
+      target.interrupted = ev.reason === 'interrupted'
       break
     case 'error':
       target.streaming = false

@@ -1,0 +1,27 @@
+name: glm-5.2
+label: GLM 5.2
+provider: zhipu
+kind: chat
+status: active
+description: 智谱新一代旗舰模型
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://open.bigmodel.cn/api/paas/v4
+context_size: 1000000
+output_size: 128000
+parameters:
+  temperature:
+    type: number
+    title: 采样温度
+    description: 越高回答越随机，越低越确定
+    default: 0.7
+    minimum: 0
+    maximum: 2
+  max_tokens:
+    type: integer
+    title: 最大输出 Token
+    description: 单次回答的最大 token 数
+    default: 4096
+    minimum: 1
+    maximum: 128000

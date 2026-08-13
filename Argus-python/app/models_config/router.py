@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import log_audit
@@ -22,6 +23,16 @@ async def list_models(
     return ApiResponse.ok(data=models)
 
 
+@router.get("/model-cards")
+async def list_model_cards(
+    _admin: AuthenticatedUser = Depends(require_admin),
+):
+    """模型卡片目录（前端添加模型表单的数据源）。"""
+    from app.models_config.cards import list_cards, card_form_schema
+    cards = [card_form_schema(c) for c in list_cards()]
+    return ApiResponse.ok(data=cards)
+
+
 @router.post("/model-configs")
 async def add_model(
     body: dict,
@@ -36,10 +47,33 @@ async def add_model(
         base_url=body.get("base_url", body.get("baseUrl", "")),
         api_key=body.get("api_key", body.get("apiKey", "")),
         model_name=body.get("model_name", body.get("modelName", "")),
+        parameters=body.get("parameters") or {},
+        api_format=body.get("api_format", body.get("apiFormat")),
     )
     await log_audit(db, _admin, "MODEL_CONFIG_ADD", "model_config", result["id"],
                     {"modelName": result["model_name"], "modelType": result["model_type"]})
     return ApiResponse.ok(data=result)
+
+
+class SetFallbackRequest(BaseModel):
+    fallbackConfigId: int | None = Field(default=None, alias="fallbackConfigId")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.patch("/model-configs/{model_id}/fallback")
+async def set_fallback(
+    model_id: int,
+    body: SetFallbackRequest,
+    admin: AuthenticatedUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = ModelConfigService(db)
+    result = await service.set_fallback(admin.user_id, model_id, body.fallbackConfigId)
+    await db.flush()
+    await log_audit(db, admin, "MODEL_CONFIG_FALLBACK", "model_config", model_id,
+                    {"fallbackConfigId": body.fallbackConfigId})
+    return ApiResponse.ok(data=result, message="备用模型已更新")
 
 
 @router.patch("/model-configs/{model_id}/activate")
@@ -77,5 +111,6 @@ async def test_connection(
         api_key=body.get("api_key", body.get("apiKey", "")),
         model_name=body.get("model_name", body.get("modelName", "")),
         model_type=body.get("model_type", body.get("modelType", "chat")),
+        api_format=body.get("api_format", body.get("apiFormat")),
     )
     return ApiResponse.ok(data=result)

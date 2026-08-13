@@ -132,7 +132,9 @@ docker-compose.yml 中 ES 用的是官方原版镜像（`docker.elastic.co/elast
 
 > 深挖 AgentScope（agentscope_sty）后确定的改造方向。按 A → B → C 顺序实施。
 
-## A. 中断建模 + 停止生成（进行中）
+## A. 中断建模 + 停止生成
+
+> 状态：已完成（2026-08-13）。
 
 - `common/finished_reason.py`：FinishedReason {COMPLETED / INTERRUPTED / NO_EVIDENCE / ERROR}
 - QA：`ask_stream` 捕获 CancelledError → finally 落库部分答案 + reason_code=INTERRUPTED（复用现有列，零迁移）→ 尽力补发 done{reason}
@@ -142,6 +144,8 @@ docker-compose.yml 中 ES 用的是官方原版镜像（`docker.elastic.co/elast
 
 ## B. 模型接入声明化（ModelCard YAML）
 
+> 状态：已完成（2026-08-13）。
+
 - `models_config/cards/*.yaml` + registry：kind / api.request_format / api.response_format / dimensions / batch_limit / parameter_overrides
 - `vector_store._embed_texts` 重写为卡片驱动（修 OpenAI 分支按 dashscope 格式解析的 IndexError bug）
 - add_model 校验 name ∈ 注册表；activate embedding 校验维度与 pgvector 列一致（终结切换悬案）
@@ -149,6 +153,28 @@ docker-compose.yml 中 ES 用的是官方原版镜像（`docker.elastic.co/elast
 
 ## C. 工具调用流式累积（参数打字机）
 
+> 状态：已完成（2026-08-13）。
+
 - facade 监听 on_chat_model_stream 的 tool_call_chunks → SSE tool_input_delta（streamKey=llm_{index}）
-- ToolCallCard：pending 虚线卡片逐字渲染 → on_tool_start 按顺序替换为权威内容
-- 兼容整块到达；前端限频渲染；落库/权限/interrupt 确认链路不变
+- ToolCallCard：typing 虚线卡片逐字渲染（光标闪烁）→ on_tool_start 原地替换为权威内容
+- 兼容整块到达；落库/权限/interrupt 确认链路不变
+
+---
+
+# 四、真实 token 用量（替代 estimate_tokens 估算）
+
+> 状态：已完成（2026-08-13）。OpenAI 兼容协议 `stream_options={"include_usage": True}` 使流式末 chunk 携带真实用量。
+
+- `models_config/fallback.py`：streaming 时注入 `model_kwargs={"stream_options": {"include_usage": True}}`（dashscope/deepseek/openai 均支持）
+- `metrics/collector.py`：新增 `extract_usage_from_chunk`（兼容 usage_metadata 与 response_metadata["usage"]、input/output 与 prompt/completion 两套 key）
+- QA `ask`/`ask_stream` + 助手 `chat`/`chat_stream`：真实用量优先，取不到回退估算；`llm_usage_records.is_estimated` 相应置 False
+- 助手流式按 astream_events 的 run_id 累积（工具循环多次模型调用求和）；非流式对最后一个 human 消息之后的 AI 消息求和
+- 端到端验证：deepseek-v4-flash 流式末 chunk 取到 input 88 / output 36，非流式同样可取
+
+## 后续候选（未实施，按价值/成本排序）
+
+- D. 服务端单 run 防重 + 会话锁（双开标签页/连点 → 同一 thread_id 并发 LangGraph，409 防重）
+- E. SSE 心跳帧（QA 规划+检索静默期 3~10s，防 nginx 空闲超时断连）
+- G. fire-and-forget POST + 会话级长连接 SSE + replay 补发（刷新页面不再杀生成，架构级改造，配套独立 interrupt 端点）
+- H. 增量落库 checkpoint（tool_end 检查点 + 定时 flush，防硬崩溃丢失）
+- I. thinking 流式（助手 reasoning_content 到折叠面板；QA 分隔符格式 ANSWER 在前，流式意义不大）

@@ -22,6 +22,8 @@ export interface UiAssistantMessage {
   streaming?: boolean
   failed?: boolean
   failureMessage?: string | null
+  /** 用户主动停止生成（部分内容保留） */
+  interrupted?: boolean
   citations?: AssistantCitationItem[]
   /** 本轮流式中产生的工具调用（实时卡片） */
   toolCalls?: AssistantToolCall[]
@@ -174,6 +176,13 @@ function pad(n: number): string {
         <div v-else-if="!message.failed" class="amsg__md" :class="{ 'is-streaming': message.streaming }">
           <div class="amsg__md-content" v-html="rendered" />
           <span v-if="message.streaming" class="amsg__cursor" />
+        </div>
+
+        <div v-if="message.interrupted" class="amsg__stopped">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="5" y="5" width="14" height="14" rx="2" />
+          </svg>
+          <span>已停止生成 · 以上为部分内容</span>
         </div>
 
         <AssistantCitationBar
@@ -486,6 +495,18 @@ function pad(n: number): string {
   background: rgba(239, 68, 68, 0.04);
   border: 1px solid rgba(239, 68, 68, 0.15);
   border-radius: 10px;
+}
+
+.amsg__stopped {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  border-radius: 100px;
 }
 
 .amsg__fail-head {

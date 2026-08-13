@@ -70,6 +70,7 @@ watch(selectedGroupId, (v) => {
 
 // ── Ask flow ──
 const asking = ref(false)
+let askAbort: AbortController | null = null
 
 // ── Cloud history (read-only review of persisted QA sessions) ──
 const historyItems = ref<QaHistoryItem[]>([])
@@ -194,6 +195,7 @@ async function handleAsk(text: string) {
   })
 
   asking.value = true
+  askAbort = new AbortController()
   let streamedContent = ''
   let answerReceived = false
   // 声明在 try 外：闭包内赋值 + try 内读取会触发 TS 控制流分析的 never 收窄
@@ -207,6 +209,7 @@ async function handleAsk(text: string) {
       },
       authStore.accessToken!,
       {
+        signal: askAbort.signal,
         onToken(token: string) {
           streamedContent += token
           updateTargetMessage(sessionId, assistantId, {
@@ -260,17 +263,23 @@ async function handleAsk(text: string) {
       })
     }
   } catch (err) {
+    const isAbort = (err as { name?: string })?.name === 'AbortError'
     updateTargetMessage(sessionId, assistantId, {
-      content: '',
+      content: streamedContent,
       pending: false,
-      answered: false,
-      reasonCode: 'REQUEST_FAILED',
-      reasonMessage: extractApiError(err, '请求失败，请稍后再试'),
+      answered: isAbort ? streamedContent.length > 0 : false,
+      reasonCode: isAbort ? 'INTERRUPTED' : 'REQUEST_FAILED',
+      reasonMessage: isAbort ? '已停止生成' : extractApiError(err, '请求失败，请稍后再试'),
       citations: [],
     })
   } finally {
     asking.value = false
+    askAbort = null
   }
+}
+
+function stopAsking() {
+  askAbort?.abort()
 }
 
 function handleNewChat() {
@@ -364,6 +373,7 @@ onMounted(() => {
         :loading="asking"
         :group-name="selectedGroupName"
         @submit="handleAsk"
+        @stop="stopAsking"
       />
     </main>
 

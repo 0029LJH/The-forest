@@ -57,6 +57,8 @@ export interface RegisterPayload {
 export interface AuthSessionResponse {
   /** JWT Access Token，前端需在后续请求头中携带 */
   accessToken: string
+  /** Refresh Token（轮换制），登录/刷新后持久化到账号快照，用于切换账号时静默续期 */
+  refreshToken: string
   /** 当前用户信息（避免登录后再次请求 /auth/me） */
   currentUser: CurrentUserProfile
 }
@@ -122,17 +124,35 @@ export async function register(payload: RegisterPayload): Promise<void> {
 }
 
 /**
- * 刷新 Access Token
+ * 刷新 Access Token（当前活跃会话）
  *
  * POST /api/auth/refresh
  *
  * 后端从 httpOnly Cookie 中读取 Refresh Token，验证后签发新的 Access Token。
  * 调用此接口需要携带 Cookie（withCredentials: true）。
  *
- * @returns 新的 accessToken 和当前用户信息
+ * @returns 新的 accessToken / refreshToken 和当前用户信息
  */
 export async function refreshSession(): Promise<AuthSessionResponse> {
   const { data } = await http.post<ApiResponse<AuthSessionResponse>>('/auth/refresh', null, {
+    withCredentials: true,
+  })
+
+  return unwrapApiResponse(data, '登录状态已过期')
+}
+
+/**
+ * 用指定账号的 Refresh Token 静默续期（账号切换场景）
+ *
+ * POST /api/auth/refresh，body 直传目标账号的 refreshToken。
+ * httpOnly cookie 只属于最后登录的账号，切换时必须走 body 传参。
+ * 后端轮换后会把新 refresh token 写入 cookie——切换成功后该账号
+ * 即成为当前活跃会话。
+ *
+ * @returns 新的 accessToken / refreshToken（已轮换）和当前用户信息
+ */
+export async function refreshWithToken(refreshToken: string): Promise<AuthSessionResponse> {
+  const { data } = await http.post<ApiResponse<AuthSessionResponse>>('/auth/refresh', { refreshToken }, {
     withCredentials: true,
   })
 

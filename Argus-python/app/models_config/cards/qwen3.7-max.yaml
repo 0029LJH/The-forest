@@ -1,0 +1,27 @@
+name: qwen3.7-max
+label: Qwen Max 3.7
+provider: dashscope
+kind: chat
+status: active
+description: 阿里云通义千问 3.7 旗舰模型
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+context_size: 1000000
+output_size: 65536
+parameters:
+  temperature:
+    type: number
+    title: 采样温度
+    description: 越高回答越随机，越低越确定
+    default: 0.7
+    minimum: 0
+    maximum: 2
+  max_tokens:
+    type: integer
+    title: 最大输出 Token
+    description: 单次回答的最大 token 数
+    default: 4096
+    minimum: 1
+    maximum: 65536

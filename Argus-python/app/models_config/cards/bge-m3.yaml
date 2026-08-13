@@ -1,0 +1,22 @@
+name: bge-m3
+label: BGE-M3（本地）
+provider: ollama
+kind: embedding
+status: active
+description: 本地部署（ollama pull bge-m3）
+api:
+  request_format: openai
+  response_format: openai
+  base_url: http://localhost:11434/v1
+context_size: 8192
+output_size: 1024
+dimensions: &id001
+- 1024
+batch_limit: 16
+parameters:
+  dimensions:
+    type: integer
+    title: 向量维度
+    description: 输出向量维度（切换需重灌向量）
+    default: 1024
+    enum: *id001

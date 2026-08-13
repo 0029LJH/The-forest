@@ -1,0 +1,27 @@
+name: claude-sonnet-4-6
+label: Claude Sonnet 4.6
+provider: anthropic
+kind: chat
+status: active
+description: Anthropic 均衡模型（Anthropic 原生端点）
+api:
+  request_format: anthropic
+  response_format: anthropic
+  base_url: https://api.anthropic.com/v1
+context_size: 200000
+output_size: 16384
+parameters:
+  temperature:
+    type: number
+    title: 采样温度
+    description: 越高回答越随机，越低越确定
+    default: 0.7
+    minimum: 0
+    maximum: 1
+  max_tokens:
+    type: integer
+    title: 最大输出 Token
+    description: 单次回答的最大 token 数
+    default: 4096
+    minimum: 1
+    maximum: 16384

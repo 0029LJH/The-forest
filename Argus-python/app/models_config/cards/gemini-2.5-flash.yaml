@@ -1,0 +1,27 @@
+name: gemini-2.5-flash
+label: Gemini 2.5 Flash
+provider: gemini
+kind: chat
+status: active
+description: Google 快速多模态模型（OpenAI 兼容端点）
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai
+context_size: 1000000
+output_size: 65536
+parameters:
+  temperature:
+    type: number
+    title: 采样温度
+    description: 越高回答越随机，越低越确定
+    default: 0.7
+    minimum: 0
+    maximum: 2
+  max_tokens:
+    type: integer
+    title: 最大输出 Token
+    description: 单次回答的最大 token 数
+    default: 4096
+    minimum: 1
+    maximum: 65536

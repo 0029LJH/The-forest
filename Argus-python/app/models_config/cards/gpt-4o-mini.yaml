@@ -1,0 +1,27 @@
+name: gpt-4o-mini
+label: GPT-4o mini
+provider: openai
+kind: chat
+status: active
+description: OpenAI 轻量快速模型
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://api.openai.com/v1
+context_size: 128000
+output_size: 16384
+parameters:
+  temperature:
+    type: number
+    title: 采样温度
+    description: 越高回答越随机，越低越确定
+    default: 0.7
+    minimum: 0
+    maximum: 2
+  max_tokens:
+    type: integer
+    title: 最大输出 Token
+    description: 单次回答的最大 token 数
+    default: 4096
+    minimum: 1
+    maximum: 16384

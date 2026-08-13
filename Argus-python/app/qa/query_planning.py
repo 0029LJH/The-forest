@@ -35,17 +35,11 @@ class QueryPlanningService:
             temperature=0.1,
         )
 
-    async def _get_chat_model(self, user_id: int) -> ChatOpenAI:
-        from app.models_config.resolver import get_chat_config
+    async def _get_chat_model(self, user_id: int):
+        from app.models_config.fallback import build_chat_model_with_fallback
         try:
-            cfg = await get_chat_config(user_id)
-            if cfg:
-                return ChatOpenAI(
-                    model=cfg["model_name"],
-                    openai_api_key=cfg["api_key"],
-                    openai_api_base=cfg["base_url"],
-                    temperature=0.1,
-                )
+            # 协议感知（openai / anthropic）+ 备用降级
+            return await build_chat_model_with_fallback(user_id, temperature=0.1)
         except Exception:
             pass
         return self.chat_model

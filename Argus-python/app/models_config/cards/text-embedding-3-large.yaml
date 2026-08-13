@@ -1,0 +1,25 @@
+name: text-embedding-3-large
+label: OpenAI Embedding 3 Large
+provider: openai
+kind: embedding
+status: active
+description: OpenAI 大维度向量模型
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://api.openai.com/v1
+  dimension_param: true
+context_size: 8192
+output_size: 3072
+dimensions: &id001
+- 256
+- 1024
+- 3072
+batch_limit: 16
+parameters:
+  dimensions:
+    type: integer
+    title: 向量维度
+    description: 输出向量维度（切换需重灌向量）
+    default: 3072
+    enum: *id001

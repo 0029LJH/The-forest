@@ -85,18 +85,10 @@ class AssistantShortTermMemoryManager:
     async def _generate_summary(self, user_id: int, messages: list) -> str:
         """Generate a semantic summary of the recent conversation via LLM."""
         try:
-            from app.models_config.resolver import get_chat_config
+            from app.models_config.fallback import build_chat_model_with_fallback
             from langchain_core.messages import HumanMessage
-            from langchain_openai import ChatOpenAI
 
-            chat_cfg = await get_chat_config(user_id)
-            model = ChatOpenAI(
-                model=chat_cfg["model_name"],
-                openai_api_key=chat_cfg["api_key"],
-                openai_api_base=chat_cfg["base_url"],
-                temperature=0.2,
-                max_tokens=300,
-            )
+            model = await build_chat_model_with_fallback(user_id, temperature=0.2, max_tokens=300)
             prefix = {"USER": "用户", "ASSISTANT": "助手", "TOOL": "工具"}
             transcript = "\n".join(
                 f"[{prefix.get(m.role, m.role)}] {m.content[:300]}" for m in reversed(messages)
