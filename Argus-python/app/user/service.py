@@ -69,13 +69,15 @@ class AdminUserService:
             "system_role": u.system_role,
             "status": u.status,
             "must_change_password": u.must_change_password,
-            "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "last_login_at": u.last_login_at.isoformat() + "Z" if u.last_login_at else None,
+            "created_at": u.created_at.isoformat() + "Z" if u.created_at else None,
         }
 
-    async def update_user_status(self, user_id: int, status: str) -> None:
+    async def update_user_status(self, user_id: int, status: str, operator_id: int = None) -> None:
         if status not in {UserStatus.ACTIVE.value, UserStatus.DISABLED.value}:
             raise BusinessException("无效的用户状态")
+        if status == UserStatus.DISABLED.value and operator_id == user_id:
+            raise BusinessException("不能禁用当前登录的管理员账号")
         result = await self.session.execute(
             update(User).where(User.id == user_id).values(status=status, updated_at=utcnow())
         )

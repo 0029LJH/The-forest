@@ -153,7 +153,21 @@ class AssistantService:
             "last_message_at": _fmt(s.last_message_at), "created_at": _fmt(s.created_at),
         }
 
-    async def get_context(self, session_id: int, recent_limit: int = 12) -> dict:
+    async def _check_session_owner(self, user_id: int, session_id: int) -> None:
+        """归属校验：会话必须属于当前用户且未删除，否则抛异常（防 IDOR 越权）。"""
+        result = await self.session.execute(
+            select(AssistantSession.id).where(
+                AssistantSession.id == session_id,
+                AssistantSession.user_id == user_id,
+                AssistantSession.status != SESSION_STATUS_DELETED,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            from app.common.exception.exceptions import BusinessException
+            raise BusinessException("会话不存在")
+
+    async def get_context(self, user_id: int, session_id: int, recent_limit: int = 12) -> dict:
+        await self._check_session_owner(user_id, session_id)
         ctx = await self.memory.load_context(session_id)
         result = await self.session.execute(
             select(AssistantMessage)
@@ -164,7 +178,8 @@ class AssistantService:
         recent = []
         for m in reversed(list(result.scalars())):
             recent.append({"message_id": m.id, "role": m.role, "content": m.content,
-                          "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at)})
+                          "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at),
+                          "structured_payload": m.structured_payload})
         summary_text = ctx.get("summary_text") or ctx.get("compact_summary") or ""
         return {
             "summaryText": summary_text,
@@ -174,9 +189,11 @@ class AssistantService:
 
     # ---- Messages ----
 
-    async def list_messages(self, session_id: int, before_id: Optional[int] = None,
+    async def list_messages(self, user_id: int, session_id: int,
+                            before_id: Optional[int] = None,
                             limit: int = 30) -> dict:
         """Cursor-paginated messages, newest first internally, returned ascending."""
+        await self._check_session_owner(user_id, session_id)
         stmt = select(AssistantMessage).where(AssistantMessage.session_id == session_id)
         if before_id is not None:
             stmt = stmt.where(AssistantMessage.id < before_id)
@@ -189,7 +206,8 @@ class AssistantService:
         return {
             "items": [
                 {"message_id": m.id, "role": m.role, "content": m.content,
-                 "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at)}
+                 "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at),
+                 "structured_payload": m.structured_payload}
                 for m in rows
             ],
             "has_more": has_more,
@@ -290,6 +308,7 @@ class AssistantService:
         thread_id = f"session_{session_id}"
         full_reply = ""
         tool_calls = []
+        citations = []
         interrupted = False
 
         async for ev in facade.chat_stream(instruction, message, tool_mode, group_id, thread_id,
@@ -302,6 +321,7 @@ class AssistantService:
                 yield ev
             elif ev["event"] == "done":
                 tool_calls = ev["data"].get("tool_calls", [])
+                citations = ev["data"].get("citations", [])
             else:
                 yield ev  # tool_start / tool_end 透传给前端
 
@@ -314,10 +334,12 @@ class AssistantService:
         self._save_tool_messages(session_id, tool_mode, tool_calls)
 
         # Save assistant message
-        self.session.add(AssistantMessage(
+        assistant_msg = AssistantMessage(
             session_id=session_id, role="ASSISTANT", tool_mode=tool_mode,
             content=full_reply,
-        ))
+            structured_payload={"citations": citations} if citations else None,
+        )
+        self.session.add(assistant_msg)
 
         await self.session.execute(
             update(AssistantSession)
@@ -326,6 +348,14 @@ class AssistantService:
                     updated_at=utcnow())
         )
         await self.session.flush()
+
+        # 完整 done 事件：reply/citations/messageId（此前 router 补发的 done 为空，
+        # 导致前端引用栏永不显示、messageId 恒空）
+        yield {"event": "done", "data": {
+            "reply": full_reply,
+            "citations": citations,
+            "messageId": assistant_msg.id,
+        }}
 
         # Auto-title (fire-and-forget, non-critical, with its own session)
         import asyncio as _asyncio
@@ -337,6 +367,8 @@ class AssistantService:
 
     async def _ensure_session(self, user_id: int, session_id: Optional[int]) -> int:
         if session_id:
+            # 归属校验：防向他人会话写入消息（IDOR）
+            await self._check_session_owner(user_id, session_id)
             return session_id
         result = await self.create_session(user_id)
         return result["session_id"]
@@ -372,6 +404,18 @@ class AssistantService:
                 "工具会在执行前自动暂停，等待用户在界面上确认或取消，**不要用文字向用户询问确认，直接调用工具**；\n"
                 "2. 回答必须基于工具返回的真实数据，查不到就如实说明；\n"
                 "3. 涉及群组时先用 list_groups 确认群组 id，涉及文档时先用 list_documents 确认文档 id。")
+        else:
+            parts.append(
+                "你可以使用以下工具查询用户参与的群组及其文档元信息：\n"
+                "- list_my_groups 列出当前用户加入或拥有的群组（含角色、状态）\n"
+                "- get_group_stats 查看某群组统计（文档数/存储/成员数/所有者）\n"
+                "- list_group_documents 查看某群组的文档列表（文件名/状态/大小/上传时间）\n"
+                "- list_group_members 查看某群组的成员列表\n"
+                "规则：\n"
+                "1. 回答必须基于工具返回的真实数据，查不到就如实说明，不要编造群组或文档信息；\n"
+                "2. 涉及具体群组时先用 list_my_groups 确认群组 id；\n"
+                "3. 工具已自动校验访问权限，被拒绝时如实告知用户无权访问；\n"
+                "4. 与知识库内容检索相关的问题不要用这些工具（它们只提供群组/文档的元信息）。")
 
         # Include recent conversation history so the assistant has short-term memory
         recent = ctx.get("recent_messages", [])

@@ -52,8 +52,8 @@ function iconClass(fileName: string): string {
         :key="`${cite.documentId ?? 'x'}-${cite.chunkId ?? idx}`"
         class="citation-rail__card"
         type="button"
-        :disabled="cite.documentId === null"
-        @click="cite.documentId !== null && emit('inspect', cite)"
+        :disabled="cite.documentId == null"
+        @click="cite.documentId != null && emit('inspect', cite)"
       >
         <div class="citation-rail__card-head">
           <span class="citation-rail__index">{{ String(idx + 1).padStart(2, '0') }}</span>

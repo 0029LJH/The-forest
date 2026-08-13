@@ -55,7 +55,7 @@ class DocumentMaintenanceService:
             from app.engine.storage import storage_service
             for key in chunk_keys:
                 try:
-                    storage_service.delete(key)
+                    await storage_service.delete(key)
                 except Exception:
                     pass
         except Exception:

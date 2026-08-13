@@ -11,10 +11,10 @@ const emit = defineEmits<{
 }>()
 
 const chatStarters = [
+  { title: '我的群组', prompt: '列出我加入的所有群组，以及我在每个群组里的角色。', icon: 'globe' },
+  { title: '群组详情', prompt: '查看我所在群组的统计信息（文档数、存储、成员数）。', icon: 'steps' },
   { title: '头脑风暴', prompt: '帮我围绕 XXX 展开 5 个不同角度的思考。', icon: 'spark' },
   { title: '解释概念', prompt: '用通俗的方式给我讲解 XXX，最好加一个生活化的比喻。', icon: 'book' },
-  { title: '代码审查', prompt: '下面这段代码有什么可以优化的地方？\n\n```\n// 粘贴代码\n```', icon: 'code' },
-  { title: '总结对比', prompt: '帮我对比 A 和 B 两种方案在成本、性能、可维护性上的差异。', icon: 'compare' },
 ]
 
 const kbStarters = [
@@ -64,7 +64,7 @@ const adminStarters = [
 
       <p class="aempty__subtitle">
         <template v-if="mode === 'CHAT'">
-          让 Argus Agent 陪你头脑风暴、解释概念、审代码、做对比 — 所有回答都会保存到会话历史里。
+          自由对话、头脑风暴，也可以查询你参与的群组与文档信息 — 所有回答都会保存到会话历史里。
         </template>
         <template v-else-if="mode === 'ADMIN'">
           查看群组与文档、平台统计、搜索知识库内容；停用群组、删除文档等写操作会先与你确认。

@@ -51,16 +51,17 @@ class EtlDocumentIngestionProcessor:
         await self.session.commit()
 
         try:
+            file_name = doc.file_name
             # 1. Read file from MinIO
-            file_data = storage_service.download(doc.storage_object_key)
-            logger.info("Read file: %s, size=%d", doc.file_name, len(file_data))
+            file_data = await storage_service.download(doc.storage_object_key)
+            logger.info("Read file: %s, size=%d", file_name, len(file_data))
 
             # 2. Parse
             parser = DocumentParserFactory.get(doc.file_ext)
-            raw_docs = await parser.parse(file_data, doc.file_name)
+            raw_docs = await parser.parse(file_data, file_name)
             if not raw_docs:
-                raise RuntimeError(f"No text extracted from {doc.file_name}")
-            logger.info("Parsed %d pages/documents from %s", len(raw_docs), doc.file_name)
+                raise RuntimeError(f"No text extracted from {file_name}")
+            logger.info("Parsed %d pages/documents from %s", len(raw_docs), file_name)
 
             # 3. Clean
             cleaned_docs = self.cleaner.transform(raw_docs)
@@ -71,13 +72,23 @@ class EtlDocumentIngestionProcessor:
 
             # 5. Chunk
             chunks = self.chunker.transform(cleaned_docs)
-            logger.info("Created %d chunks from %s", len(chunks), doc.file_name)
+            logger.info("Created %d chunks from %s", len(chunks), file_name)
 
-            # 6. Save chunks to DB
+            # 6. Clear indexes from a previous attempt before re-chunking.
+            # Always clean (not only when old chunks exist): a killed worker
+            # can leave vectors/ES docs whose chunk rows were rolled back, so
+            # chunk-count checks miss that case and ghosts resurface in search.
+            await PgVectorRetrievalAdapter(settings.database_url).delete_by_document_ids([document_id])
+            await es_service.delete_by_document_ids([document_id])
+
+            # 7. Save chunks to DB and commit before indexing — a crash between
+            # chunk insert and vector insert must not leave vectors pointing at
+            # rows that never became visible
             chunk_entities = await self.chunk_service.save_chunks(document_id, group_id, chunks)
+            await self.session.commit()
             logger.info("Saved %d chunks to DB", len(chunk_entities))
 
-            # 7. Vectorize and store
+            # 8. Vectorize and store
             from langchain_core.documents import Document as LCDocument
             vector_docs = []
             for entity in chunk_entities:
@@ -89,20 +100,19 @@ class EtlDocumentIngestionProcessor:
                         "group_id": entity.group_id,
                         "chunk_id": entity.id,
                         "chunk_index": entity.chunk_index,
-                        "source": doc.file_name,
+                        "source": file_name,
                     },
                 ))
 
             vector_adapter = PgVectorRetrievalAdapter(settings.database_url)
-            await vector_adapter.ensure_table()
             await vector_adapter.add_documents(vector_docs)
             logger.info("Vectorized %d chunks", len(vector_docs))
 
-            # 8. Index in ES
-            await es_service.index_chunks(doc.file_name, chunk_entities)
+            # 9. Index in ES
+            await es_service.index_chunks(file_name, chunk_entities)
             logger.info("Indexed %d chunks in ES", len(chunk_entities))
 
-            # 9. Mark document READY (clear any stale failure reason)
+            # 10. Mark document READY (clear any stale failure reason)
             await self.session.execute(
                 update(Document).where(Document.id == document_id).values(
                     status=DOC_STATUS_READY,

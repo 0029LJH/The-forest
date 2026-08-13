@@ -8,6 +8,7 @@ from app.common.exception.exceptions import BusinessException
 from app.common.response import ApiResponse
 from app.common.security.context import AuthenticatedUser
 from app.dependencies import get_db
+from app.group.service import require_group_access
 from app.group.service import (
     GroupManagementService,
     GroupMembershipService,
@@ -50,6 +51,8 @@ async def list_members(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # 权限校验：仅群组成员（或管理员）可查看成员列表，防信息泄露
+    await require_group_access(db, current_user.user_id, current_user.system_role, group_id)
     service = GroupMembershipService(db)
     members = await service.list_members(group_id)
     return ApiResponse.ok(data=members)
@@ -375,7 +378,7 @@ async def approve_join_request(
     db: AsyncSession = Depends(get_db),
 ):
     service = GroupJoinRequestService(db)
-    await service.process_request(current_user.user_id, request_id, approved=True)
+    await service.process_request(current_user.user_id, group_id, request_id, approved=True)
     return ApiResponse.ok(message="已批准申请")
 
 
@@ -387,5 +390,5 @@ async def reject_join_request(
     db: AsyncSession = Depends(get_db),
 ):
     service = GroupJoinRequestService(db)
-    await service.process_request(current_user.user_id, request_id, approved=False)
+    await service.process_request(current_user.user_id, group_id, request_id, approved=False)
     return ApiResponse.ok(message="已拒绝申请")

@@ -92,7 +92,9 @@
 
 ## 后续（普通用户工具扩展）
 
-TODO 旧方案（list_my_groups / list_group_documents / list_group_members / get_group_stats，带 `require_group_access` 校验，CHAT 模式开放）——管理员助手落地后再做，机制完全复用。
+> 状态：已完成（2026-08-13）。
+
+TODO 旧方案（list_my_groups / list_group_documents / list_group_members / get_group_stats，带 `require_group_access` 校验，CHAT 模式开放）——已落地：4 个工具在 `tools.py` 的 `USER_TOOLS`（对外名与方案一致，函数名加 user_ 前缀避开与 ADMIN 工具重名），CHAT 模式挂载（recursion_limit 12），`_build_instruction` CHAT 分支描述工具与规则，前端 CHAT 空态补群组类引导语。冒烟验证：user 2 四个工具返回真实数据，非成员 user 99 全部被拒。
 
 ---
 
@@ -123,3 +125,30 @@ docker-compose.yml 中 ES 用的是官方原版镜像（`docker.elastic.co/elast
 3. `docker compose up -d elasticsearch` 重建 + 重启后端
 4. 写一次性重索引脚本：遍历已 READY 文档 → 读 chunks → `es_service.index_chunks` 重建 ES 数据
 5. 验证：`_analyze` 接口确认 ik 分词生效；真实 QA 检索中文短语命中
+
+---
+
+# 三、借鉴 AgentScope 的三项改造（2026-08-13 定案）
+
+> 深挖 AgentScope（agentscope_sty）后确定的改造方向。按 A → B → C 顺序实施。
+
+## A. 中断建模 + 停止生成（进行中）
+
+- `common/finished_reason.py`：FinishedReason {COMPLETED / INTERRUPTED / NO_EVIDENCE / ERROR}
+- QA：`ask_stream` 捕获 CancelledError → finally 落库部分答案 + reason_code=INTERRUPTED（复用现有列，零迁移）→ 尽力补发 done{reason}
+- 前端 QaView：AbortController + 停止按钮；中断后气泡保留部分答案 + "已停止"灰标
+- 助手：facade 拆出 CancelledError → done{reason:interrupted, reply}；service 落库部分回答 + interrupted 标记；前端停止态统一
+- SSE 协议：两个流式端点 done 事件统一带 reason 字段（向后兼容，新增字段）
+
+## B. 模型接入声明化（ModelCard YAML）
+
+- `models_config/cards/*.yaml` + registry：kind / api.request_format / api.response_format / dimensions / batch_limit / parameter_overrides
+- `vector_store._embed_texts` 重写为卡片驱动（修 OpenAI 分支按 dashscope 格式解析的 IndexError bug）
+- add_model 校验 name ∈ 注册表；activate embedding 校验维度与 pgvector 列一致（终结切换悬案）
+- `GET /api/admin/model-cards` + 前端添加模型表单卡片驱动
+
+## C. 工具调用流式累积（参数打字机）
+
+- facade 监听 on_chat_model_stream 的 tool_call_chunks → SSE tool_input_delta（streamKey=llm_{index}）
+- ToolCallCard：pending 虚线卡片逐字渲染 → on_tool_start 按顺序替换为权威内容
+- 兼容整块到达；前端限频渲染；落库/权限/interrupt 确认链路不变

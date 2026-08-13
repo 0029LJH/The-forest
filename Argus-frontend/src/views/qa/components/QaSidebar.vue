@@ -616,6 +616,12 @@ function formatRelative(ts: number): string {
 
 .qa-sidebar__list--archived {
   margin-top: 4px;
+  /* 云端历史列表自身需要高度约束才能滚动：
+     本地会话列表 flex:1 已占满容器，archived 无约束时高度=内容高度，
+     超出部分被 sidebar overflow:hidden 裁剪且无法滚动 */
+  max-height: 30vh;
+  flex-shrink: 1;
+  min-height: 0;
 }
 
 .qa-sidebar__archived-empty {

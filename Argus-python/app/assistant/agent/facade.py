@@ -53,10 +53,20 @@ async def chat_sync(
 
     config = _agent_config(thread_id, group_id, result_holder, user_id, user_code, system_role)
 
-    result = await agent.ainvoke(
-        {"messages": [HumanMessage(content=user_message)]},
-        config=config,
-    )
+    # 非流式路径无确认交互：写工具 interrupt 时捕获，避免 GraphInterrupt 冒泡 500
+    from langgraph.errors import GraphInterrupt
+    try:
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=user_message)]},
+            config=config,
+        )
+    except GraphInterrupt:
+        return {
+            "reply": "该操作需要确认，请使用流式对话（/chat/stream）完成确认。",
+            "citations": result_holder.current_citations,
+            "thinking": "",
+            "tool_calls": result_holder.tool_calls,
+        }
 
     reply = ""
     for msg in result.get("messages", []):
@@ -214,4 +224,7 @@ async def chat_stream(
             logger.warning("Interrupt detection failed: %s", e)
 
     result_holder.reply = full_reply
-    yield {"event": "done", "data": {"tool_calls": result_holder.tool_calls}}
+    yield {"event": "done", "data": {
+        "tool_calls": result_holder.tool_calls,
+        "citations": result_holder.current_citations,
+    }}

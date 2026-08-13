@@ -67,6 +67,11 @@ class QaService:
 
         system_msg = """你是一个知识库智能助手，必须严格基于下方提供的证据内容回答问题。证据中的每条信息都是真实可靠的，直接引用证据中的具体内容来回答，不要自己编造或说"资料中没有"。不要在答案中写"证据E1"之类的编号。如果没有提供任何证据或证据等级为NONE，才可以说找不到相关信息。
 
+回答规则：
+1. 必须严格遵守下方"证据等级"和"证据指导"对应的回答策略：WEAK 只能谨慎回答并明确说明依据有限，不能给出确定性结论；PARTIAL 只能回答证据明确支持的部分，未覆盖部分必须明确说明不足；SUFFICIENT 可以正常回答但仍然不得超出证据臆测。
+2. 如果问题包含多个子问题，只回答证据覆盖到的部分，未覆盖的子问题如实说明证据中没有相关内容。
+3. 如果证据无法支持完整答案，优先保证准确，不要为了回答完整而编造。
+
 用以下格式输出：
 <<<ANSWER>>>
 你的回答内容
@@ -108,7 +113,8 @@ class QaService:
                 doc = bundle.documents[idx]
                 snippet = doc.content[:150] if len(doc.content) > 150 else doc.content
                 formatted_citations.append({
-                    "documentId": None, "chunkId": None, "chunkIndex": doc.chunk_ids[0] if doc.chunk_ids else None,
+                    "documentId": doc.document_id or None, "chunkId": doc.chunk_id or None,
+                    "chunkIndex": doc.chunk_ids[0] if doc.chunk_ids else None,
                     "fileName": doc.source_file, "score": doc.rrf_score, "snippet": snippet.strip(),
                 })
 
@@ -189,8 +195,9 @@ class QaService:
                     evidence_level=evidence_level,
                 ))
                 await session.commit()
-        except Exception:
-            pass  # persistence must never break QA
+        except Exception as e:
+            # persistence must never break QA, but silent loss must not either
+            logger.exception("QA session persistence failed: %s", e)
 
     async def _record_usage(self, user_id: int, group_id: int, module: str,
                             endpoint: str, prompt_tokens: int, completion_tokens: int,
@@ -208,8 +215,8 @@ class QaService:
                     model_name=model_name or settings.chat.model_name,
                 )
                 await session.commit()
-        except Exception:
-            pass  # metrics failure should never break QA
+        except Exception as e:
+            logger.exception("QA usage record failed: %s", e)
 
     async def ask_stream(self, user_id: int, group_id: int,
                          question: str, session_id: Optional[int] = None) -> AsyncIterator[dict]:
@@ -218,10 +225,14 @@ class QaService:
         # Query planning
         plan = await self._query_planning.plan(question, user_id)
         planned_queries = plan.get("queries", [question])
+        logger.info("QA timing: plan done in %.0fms, queries=%s",
+                    (time.perf_counter() - start_time) * 1000, planned_queries)
 
         # Hybrid retrieval
         retrieval = HybridChunkRetrievalService(self._vector_adapter)
         bundle = await retrieval.retrieve(group_id, question, planned_queries)
+        logger.info("QA timing: retrieve done in %.0fms",
+                    (time.perf_counter() - start_time) * 1000)
 
         # Assemble citations with snippets (only if evidence found)
         citations = []
@@ -234,6 +245,8 @@ class QaService:
                     "snippet": snippet.strip(),
                     "chunkIndex": doc.chunk_ids[0] if doc.chunk_ids else None,
                     "score": doc.rrf_score,
+                    "documentId": doc.document_id or None,
+                    "chunkId": doc.chunk_id or None,
                 })
 
         # Limit total evidence text to avoid overflowing model context window
@@ -278,6 +291,11 @@ class QaService:
 
         system_msg = """你是一个知识库智能助手，必须严格基于下方提供的证据内容回答问题。证据中的每条信息都是真实可靠的，直接引用证据中的具体内容来回答，不要自己编造或说"资料中没有"。不要在答案中写"证据E1"之类的编号。如果没有提供任何证据或证据等级为NONE，才可以说找不到相关信息。
 
+回答规则：
+1. 必须严格遵守下方"证据等级"和"证据指导"对应的回答策略：WEAK 只能谨慎回答并明确说明依据有限，不能给出确定性结论；PARTIAL 只能回答证据明确支持的部分，未覆盖部分必须明确说明不足；SUFFICIENT 可以正常回答但仍然不得超出证据臆测。
+2. 如果问题包含多个子问题，只回答证据覆盖到的部分，未覆盖的子问题如实说明证据中没有相关内容。
+3. 如果证据无法支持完整答案，优先保证准确，不要为了回答完整而编造。
+
 用以下格式输出（严格按照标记，不要遗漏）：
 <<<ANSWER>>>
 你的回答内容
@@ -298,6 +316,10 @@ class QaService:
         parser = StreamingAnswerParser()
         answer_text = ""
         full_content = ""
+        tail_text = ""
+        stream_failed = False
+        thinking_text = ""
+        persisted_citations = []
         try:
             async for chunk in chat_model.astream([
                 SystemMessage(content=system_msg),
@@ -310,37 +332,52 @@ class QaService:
                         answer_text += delta
                         yield {"event": "token", "data": json.dumps({"text": delta})}
         except Exception as e:
+            # GeneratorExit (client disconnect) is a BaseException, so it does
+            # not land here — it propagates and only runs the finally block.
+            logger.exception("QA stream LLM call failed: %s", e)
+            stream_failed = True
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
+        finally:
+            # Persist the round and record usage no matter how the stream
+            # ended — a client disconnect used to skip both silently.
+            tail_text = parser.flush()
+            if tail_text:
+                answer_text += tail_text
+            if not answer_text and full_content.strip():
+                # Delimiter tags missing entirely — fall back to off-line parse
+                answer_text, _, _ = _parse_delimited_response(full_content.strip())
+            logger.info("QA stream parsed answer (first 200 chars): %s", answer_text[:200])
+
+            _, thinking_text, citation_nums = _parse_delimited_response(full_content.strip())
+            # Mirror the non-streaming endpoint: only cite evidence the LLM
+            # actually referenced in its <<<CITATIONS>>> section.
+            for i in citation_nums:
+                if 1 <= i <= len(citations):
+                    c = citations[i - 1]
+                    persisted_citations.append({
+                        "documentId": c.get("documentId"),
+                        "chunkId": c.get("chunkId"),
+                        "chunkIndex": c.get("chunkIndex"),
+                        "fileName": c["file_name"],
+                        "score": c.get("score", 1.0),
+                        "snippet": c.get("snippet"),
+                    })
+            await self._persist_session(user_id, group_id, question, answer_text,
+                                        persisted_citations, None, None, thinking_text,
+                                        session_id=session_id,
+                                        evidence_level=bundle.evidence_level.value)
+            await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask",
+                estimate_tokens(evidence_text), estimate_tokens(answer_text),
+                success=not stream_failed,
+                model_name=chat_cfg["model_name"])
+
+        if stream_failed:
             return
 
-        tail = parser.flush()
-        if tail:
-            answer_text += tail
-            yield {"event": "token", "data": json.dumps({"text": tail})}
-        if not answer_text and full_content.strip():
-            # Delimiter tags missing entirely — fall back to off-line parse
-            answer_text, _, _ = _parse_delimited_response(full_content.strip())
-        logger.info("QA stream parsed answer (first 200 chars): %s", answer_text[:200])
-
+        if tail_text:
+            yield {"event": "token", "data": json.dumps({"text": tail_text})}
         if answer_text:
             yield {"event": "answer", "data": json.dumps({"text": answer_text})}
-        # Record usage with the actual active model name
-        await self._record_usage(user_id, group_id, "qa", "/api/qa/stream-ask",
-            estimate_tokens(evidence_text), estimate_tokens(answer_text), True,
-            model_name=chat_cfg["model_name"])
-        _, thinking_text, _ = _parse_delimited_response(full_content.strip())
-        persisted_citations = [{
-            "documentId": None,
-            "chunkId": None,
-            "chunkIndex": c.get("chunkIndex"),
-            "fileName": c["file_name"],
-            "score": c.get("score", 1.0),
-            "snippet": c.get("snippet"),
-        } for c in citations]
-        await self._persist_session(user_id, group_id, question, answer_text,
-                                    persisted_citations, None, None, thinking_text,
-                                    session_id=session_id,
-                                    evidence_level=bundle.evidence_level.value)
         yield {"event": "citations",
                "data": json.dumps({
                    "citations": persisted_citations,

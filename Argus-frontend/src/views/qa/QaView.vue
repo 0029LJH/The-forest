@@ -13,8 +13,7 @@ import {
 } from '@/api/qa'
 import type { QaHistoryDetail, QaHistoryItem, QaHistoryMessage } from '@/api/admin'
 import { extractApiError } from '@/api/http'
-import type { DocumentItem } from '@/api/document'
-import DocumentPreviewModal from '@/components/DocumentPreviewModal.vue'
+import ChunkPreviewModal from '@/components/ChunkPreviewModal.vue'
 import QaSidebar from './components/QaSidebar.vue'
 import QaTranscript from './components/QaTranscript.vue'
 import QaComposer from './components/QaComposer.vue'
@@ -197,6 +196,7 @@ async function handleAsk(text: string) {
   asking.value = true
   let streamedContent = ''
   let answerReceived = false
+  // 声明在 try 外：闭包内赋值 + try 内读取会触发 TS 控制流分析的 never 收窄
   let refused: CitationMeta | null = null
   try {
     await streamAskQuestion(
@@ -252,8 +252,10 @@ async function handleAsk(text: string) {
         content: streamedContent,
         pending: false,
         answered: refused ? false : streamedContent.length > 0,
-        reasonCode: refused?.reasonCode ?? null,
-        reasonMessage: refused?.reasonMessage ?? null,
+        // refused 在回调闭包中赋值，TS 控制流分析会将其收窄为 never，
+        // 用显式断言绕开（运行时值始终是 CitationMeta | null）
+        reasonCode: (refused as CitationMeta | null)?.reasonCode ?? null,
+        reasonMessage: (refused as CitationMeta | null)?.reasonMessage ?? null,
         citations: [],
       })
     }
@@ -282,37 +284,24 @@ function handleStarterPick(prompt: string) {
   composerRef.value?.setText(prompt)
 }
 
-// ── Citation preview bridge ──
-const previewVisible = ref(false)
-const previewDocument = ref<DocumentItem | null>(null)
+// ── Citation preview bridge（复用助手侧分块预览：定位并高亮被引用片段）──
+const chunkPreviewVisible = ref(false)
+const chunkPreviewDoc = ref<{
+  documentId: number
+  fileName: string
+  chunkId: number | null
+  chunkIndex: number | null
+} | null>(null)
 
 function openCitation(c: CitationItem) {
-  if (c.documentId === null) return
-  const groupId = historyGroupId.value ?? activeSession.value?.groupId ?? selectedGroupId.value
-  if (groupId === null) return
-  const fileExt = extractExt(c.fileName)
-  previewDocument.value = {
+  if (c.documentId == null) return
+  chunkPreviewDoc.value = {
     documentId: c.documentId,
-    groupId,
     fileName: c.fileName,
-    fileExt,
-    contentType: null,
-    fileSize: 0,
-    status: 'READY',
-    failureReason: null,
-    uploadedAt: '',
-    uploaderUserId: null,
-    uploaderDisplayName: null,
-    uploaderUserCode: null,
-    previewText: c.snippet,
+    chunkId: c.chunkId,
+    chunkIndex: c.chunkIndex,
   }
-  previewVisible.value = true
-}
-
-function extractExt(fileName: string): string | null {
-  const idx = fileName.lastIndexOf('.')
-  if (idx < 0) return null
-  return fileName.slice(idx + 1).toLowerCase()
+  chunkPreviewVisible.value = true
 }
 
 // ── Lifecycle ──
@@ -378,10 +367,13 @@ onMounted(() => {
       />
     </main>
 
-    <DocumentPreviewModal
-      :visible="previewVisible"
-      :document="previewDocument"
-      @update:visible="(v: boolean) => (previewVisible = v)"
+    <ChunkPreviewModal
+      :visible="chunkPreviewVisible"
+      :document-id="chunkPreviewDoc?.documentId ?? null"
+      :file-name="chunkPreviewDoc?.fileName ?? ''"
+      :chunk-id="chunkPreviewDoc?.chunkId ?? null"
+      :chunk-index="chunkPreviewDoc?.chunkIndex ?? null"
+      @update:visible="(v: boolean) => (chunkPreviewVisible = v)"
     />
   </div>
 </template>

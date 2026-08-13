@@ -141,13 +141,13 @@ export interface AssistantMessageItem {
   /** 消息文本内容（Markdown 格式） */
   content: string
   /**
-   * JSON 序列化的结构化负载
+   * 结构化负载（后端 JSON 列，可能是对象或字符串）
    *
    * TOOL 角色时为工具调用参数或返回结果，
-   * ASSISTANT 角色时可能包含内部的工具编排记录。
-   * 前端解析时应对 JSON 解析失败做好兜底。
+   * ASSISTANT 角色时可能包含内部的工具编排记录（如 citations）。
+   * 前端解析时应对字符串/对象两种形态与解析失败做好兜底。
    */
-  structuredPayload: string | null
+  structuredPayload: string | Record<string, unknown> | null
   /** 消息创建时间（ISO 8601） */
   createdAt: string
 }

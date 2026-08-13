@@ -6,7 +6,7 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.config import settings
-from app.assistant.agent.tools import knowledge_base_search, ADMIN_TOOLS
+from app.assistant.agent.tools import knowledge_base_search, ADMIN_TOOLS, USER_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class ResultHolder:
 class AssistantAgentFactory:
     RECURSION_LIMIT = 10
     RECURSION_LIMIT_ADMIN = 15
+    RECURSION_LIMIT_CHAT = 12
 
     def __init__(self):
         self.chat_model = None  # Lazily created per-request with active config
@@ -47,6 +48,9 @@ class AssistantAgentFactory:
         elif tool_mode == "ADMIN":
             tools = ADMIN_TOOLS
             recursion_limit = self.RECURSION_LIMIT_ADMIN
+        else:  # CHAT：普通用户工具（群组/文档元信息查询）
+            tools = USER_TOOLS
+            recursion_limit = self.RECURSION_LIMIT_CHAT
 
         agent = create_react_agent(
             model=chat_model,

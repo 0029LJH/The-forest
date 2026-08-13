@@ -16,6 +16,8 @@ COLLECTION_NAME = "rag_document_chunks"
 
 async def _embed_texts(texts: List[str], user_id: int = None) -> List[List[float]]:
     """Call embedding API, using active model config if available."""
+    import time
+    _t0 = time.perf_counter()
     from app.models_config.resolver import get_embedding_config
 
     # Try to get admin's active config; if not available, use .env defaults
@@ -34,6 +36,8 @@ async def _embed_texts(texts: List[str], user_id: int = None) -> List[List[float
     except Exception:
         api_key = s.api_key
         model_name = s.model_name
+    logger.info("Embedding timing: config ready in %.0fms, sending %d texts",
+                (time.perf_counter() - _t0) * 1000, len(texts))
 
     # Determine API format based on model
     if "dashscope" in api_url or not api_url:
@@ -100,6 +104,35 @@ class PgVectorRetrievalAdapter:
                     custom_id VARCHAR
                 )
             """))
+            # HNSW 要求固定维度：历史表是无维度 vector，迁移为 vector(N)
+            col_type = (await conn.execute(text(
+                "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+                "WHERE attrelid='langchain_pg_embedding'::regclass AND attname='embedding'"
+            ))).scalar()
+            if col_type == "vector":
+                # 从数据推断维度（配置可能过期，以实际数据为准）
+                dim = (await conn.execute(text(
+                    "SELECT array_length(embedding::real[], 1) "
+                    "FROM langchain_pg_embedding LIMIT 1"
+                ))).scalar()
+                if dim:
+                    await conn.execute(text(
+                        f"ALTER TABLE langchain_pg_embedding "
+                        f"ALTER COLUMN embedding TYPE vector({dim})"
+                    ))
+                    logger.info("Migrated embedding column to vector(%s)", dim)
+
+            # 向量 HNSW 索引：把 O(n) 全表距离扫描降到对数级近邻搜索
+            # （pgvector 0.5+；幂等，启动时自动补齐）
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_lpe_embedding_hnsw "
+                "ON langchain_pg_embedding USING hnsw (embedding vector_cosine_ops)"
+            ))
+            # cmetadata GIN 索引：加速 WHERE cmetadata->>'group_id' = :gid 过滤
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_lpe_cmetadata_gin "
+                "ON langchain_pg_embedding USING gin (cmetadata)"
+            ))
         logger.info("PGVector table ensured: %s", COLLECTION_NAME)
 
     async def search(self, group_id: int, question: str, top_k: int = 50) -> List[VectorHit]:

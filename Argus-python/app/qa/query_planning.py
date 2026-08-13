@@ -87,5 +87,7 @@ class QueryPlanningService:
         elif strategy == QueryPlanStrategy.REWRITE.value:
             return {"strategy": strategy, "queries": [original] + queries[:self.MAX_QUERY_COUNT - 1]}
         elif strategy == QueryPlanStrategy.DECOMPOSE.value:
-            return {"strategy": strategy, "queries": queries[:self.MAX_QUERY_COUNT]}
+            # 原查询 + 拆分查询组合：调研表明原查询参与检索召回更高
+            # （拆分查询最多 MAX_QUERY_COUNT 条，总数可能 4 条，并行检索成本增量小）
+            return {"strategy": strategy, "queries": [original] + queries[:self.MAX_QUERY_COUNT]}
         return {"strategy": QueryPlanStrategy.DIRECT.value, "queries": [original]}

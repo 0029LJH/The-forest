@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { AssistantCitationItem } from '@/types/assistant'
+import type {
+  AssistantCitationItem,
+} from '@/types/assistant'
 
 defineProps<{
   citations: AssistantCitationItem[]
@@ -15,7 +17,7 @@ function formatScore(score: number): string {
 }
 
 function fileTag(fileName: string): string {
-  const ext = fileName.toLowerCase().split('.').pop() ?? ''
+  const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? ''
   if (ext === 'pdf') return 'PDF'
   if (ext === 'md') return 'MD'
   if (ext === 'docx' || ext === 'doc') return 'DOC'
@@ -24,17 +26,17 @@ function fileTag(fileName: string): string {
 }
 
 function tagClass(fileName: string): string {
-  const ext = fileName.toLowerCase().split('.').pop() ?? ''
-  if (ext === 'pdf') return 'citebar__chip-tag--pdf'
-  if (ext === 'md') return 'citebar__chip-tag--md'
-  if (ext === 'docx' || ext === 'doc') return 'citebar__chip-tag--doc'
-  return 'citebar__chip-tag--txt'
+  const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? ''
+  if (ext === 'pdf') return 'citebar__type--pdf'
+  if (ext === 'md') return 'citebar__type--md'
+  if (ext === 'docx' || ext === 'doc') return 'citebar__type--doc'
+  return 'citebar__type--txt'
 }
 </script>
 
 <template>
   <div class="citebar">
-    <div class="citebar__head">
+    <header class="citebar__head">
       <span class="citebar__eyebrow">Evidence Chain</span>
       <span class="citebar__title">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -44,25 +46,32 @@ function tagClass(fileName: string): string {
         <strong>引用证据</strong>
         <span class="citebar__count">{{ citations.length }}</span>
       </span>
-    </div>
+    </header>
 
-    <div class="citebar__grid">
+    <div class="citebar__scroll">
       <button
         v-for="(c, idx) in citations"
         :key="`${c.documentId ?? 'x'}-${c.chunkId ?? idx}`"
-        class="citebar__chip"
+        class="citebar__card"
         type="button"
-        :disabled="c.documentId === null"
-        @click="c.documentId !== null && emit('inspect', c)"
+        :disabled="c.documentId == null"
+        @click="c.documentId != null && emit('inspect', c)"
       >
-        <span class="citebar__chip-no">{{ String(idx + 1).padStart(2, '0') }}</span>
-        <span class="citebar__chip-tag" :class="tagClass(c.fileName)">{{ fileTag(c.fileName) }}</span>
-        <span class="citebar__chip-name" :title="c.fileName">{{ c.fileName }}</span>
-        <span class="citebar__chip-score">{{ formatScore(c.score) }}</span>
-        <svg class="citebar__chip-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="7" y1="17" x2="17" y2="7" />
-          <polyline points="7 7 17 7 17 17" />
-        </svg>
+        <div class="citebar__card-head">
+          <span class="citebar__index">{{ String(idx + 1).padStart(2, '0') }}</span>
+          <span class="citebar__type" :class="tagClass(c.fileName)">{{ fileTag(c.fileName) }}</span>
+          <span class="citebar__score">{{ formatScore(c.score) }}</span>
+        </div>
+        <h4 class="citebar__filename" :title="c.fileName">
+          {{ c.fileName ?? '未知文件' }}
+        </h4>
+        <div class="citebar__card-foot">
+          <span v-if="c.chunkIndex != null" class="citebar__chunk">片段 #{{ c.chunkIndex }}</span>
+          <div class="citebar__meter">
+            <span class="citebar__meter-fill" :style="{ width: `${Math.min(100, (c.score || 0) * 100)}%` }" />
+          </div>
+          <span class="citebar__score">{{ formatScore(c.score) }}</span>
+        </div>
       </button>
     </div>
   </div>
@@ -71,7 +80,7 @@ function tagClass(fileName: string): string {
 <style scoped>
 .citebar {
   margin-top: 14px;
-  padding-top: 14px;
+  padding: 14px 0 4px;
   border-top: 1px dashed rgba(15, 23, 42, 0.1);
 }
 
@@ -119,103 +128,163 @@ function tagClass(fileName: string): string {
   border-radius: 100px;
 }
 
-.citebar__grid {
+.citebar__scroll {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 2px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
 }
 
-.citebar__chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  padding: 5px 10px 5px 8px;
-  background: #fff;
-  border: 1px solid var(--border-default);
-  border-radius: 100px;
-  font-family: inherit;
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+.citebar__scroll::-webkit-scrollbar {
+  height: 6px;
 }
 
-.citebar__chip:hover:not(:disabled) {
-  transform: translateY(-1px);
-  border-color: var(--brand-primary);
-  background: var(--surface-accent);
-  box-shadow: 0 4px 14px rgba(74, 144, 217, 0.12);
-}
-
-.citebar__chip:hover:not(:disabled) .citebar__chip-arrow {
-  transform: translate(1px, -1px);
-  color: var(--brand-primary);
-}
-
-.citebar__chip:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.citebar__chip-no {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.66rem;
-  font-weight: 700;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-}
-
-.citebar__chip-tag {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  padding: 1px 5px;
+.citebar__scroll::-webkit-scrollbar-thumb {
+  background: var(--border-default);
   border-radius: 3px;
 }
 
-.citebar__chip-tag--pdf {
-  color: #dc2626;
-  background: rgba(239, 68, 68, 0.1);
-}
-
-.citebar__chip-tag--md {
-  color: var(--brand-primary);
-  background: rgba(74, 144, 217, 0.1);
-}
-
-.citebar__chip-tag--doc {
-  color: #2563eb;
-  background: rgba(59, 130, 246, 0.1);
-}
-
-.citebar__chip-tag--txt {
-  color: #64748b;
-  background: rgba(148, 163, 184, 0.15);
-}
-
-.citebar__chip-name {
-  font-size: 0.78rem;
-  font-weight: 500;
-  color: var(--text-primary);
+.citebar__card {
+  flex-shrink: 0;
+  width: 260px;
+  padding: 12px 14px 12px;
+  background: #fff;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  position: relative;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 260px;
 }
 
-.citebar__chip-score {
+.citebar__card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(to bottom, var(--brand-primary), var(--brand-accent));
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.citebar__card:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: var(--brand-primary);
+  box-shadow: 0 8px 20px rgba(74, 144, 217, 0.12);
+}
+
+.citebar__card:hover:not(:disabled)::before {
+  opacity: 1;
+}
+
+.citebar__card:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.citebar__card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.citebar__index {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--brand-accent-dark);
-  letter-spacing: 0.02em;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
 }
 
-.citebar__chip-arrow {
-  color: var(--text-muted);
-  transition: all 0.2s ease;
+.citebar__type {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.citebar__type--pdf {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.citebar__type--md {
+  background: rgba(74, 144, 217, 0.1);
+  color: var(--brand-primary);
+}
+
+.citebar__type--doc {
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+}
+
+.citebar__type--txt {
+  background: rgba(148, 163, 184, 0.15);
+  color: #64748b;
+}
+
+.citebar__score {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--brand-accent-dark);
+}
+
+.citebar__filename {
+  margin: 0 0 6px;
+  font-family: 'Poppins', 'Noto Sans SC', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.citebar__card-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.citebar__chunk {
   flex-shrink: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.citebar__meter {
+  flex: 1;
+  height: 3px;
+  background: var(--surface-muted);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.citebar__meter-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--brand-primary), var(--brand-accent));
+  border-radius: 2px;
+  transition: width 0.3s ease;
 }
 </style>

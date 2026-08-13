@@ -74,7 +74,7 @@ async def update_user_status(
     db: AsyncSession = Depends(get_db),
 ):
     service = AdminUserService(db)
-    await service.update_user_status(user_id, request.status)
+    await service.update_user_status(user_id, request.status, operator_id=_admin.user_id)
     await log_audit(db, _admin, "USER_STATUS_CHANGE", "user", user_id, {"status": request.status})
     return ApiResponse.ok(message="用户状态更新成功")
 

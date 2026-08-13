@@ -215,7 +215,14 @@ export interface QaHistoryMessage {
   role: 'USER' | 'ASSISTANT'
   content: string
   thinking: string | null
-  citations: Array<{ fileName: string; chunkIndex: number | null; score: number; snippet: string | null }>
+  citations: Array<{
+    documentId: number | null
+    chunkId: number | null
+    fileName: string
+    chunkIndex: number | null
+    score: number
+    snippet: string | null
+  }>
   reasonCode: string | null
   reasonMessage: string | null
   createdAt: string | null

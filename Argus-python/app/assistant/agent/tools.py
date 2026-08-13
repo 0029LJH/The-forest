@@ -65,6 +65,18 @@ async def knowledge_base_search(query: str, config: RunnableConfig = None) -> st
     if not group_id:
         return json.dumps({"found": False, "reasonCode": "NO_GROUP", "message": "未指定知识库群组"})
 
+    # 权限校验：防任意用户传任意 group_id 读取他人群组文档（IDOR）
+    from app.dependencies import async_session_factory
+    from app.group.service import require_group_access
+    async with async_session_factory() as s:
+        try:
+            await require_group_access(s, cfg.get("user_id"), cfg.get("system_role"), group_id)
+        except Exception:
+            return json.dumps({
+                "found": False, "reasonCode": "FORBIDDEN",
+                "message": "无权访问该群组知识库",
+            }, ensure_ascii=False)
+
     vector_adapter = PgVectorRetrievalAdapter(settings.database_url)
     retrieval = HybridChunkRetrievalService(vector_adapter)
     bundle = await retrieval.retrieve(group_id, query, [query])
@@ -72,7 +84,15 @@ async def knowledge_base_search(query: str, config: RunnableConfig = None) -> st
     citations = []
     evidences = []
     for doc in bundle.documents:
-        citations.append({"index": len(citations) + 1, "file_name": doc.source_file})
+        citations.append({
+            "index": len(citations) + 1,
+            "documentId": doc.document_id or None,
+            "chunkId": doc.chunk_id or None,
+            "chunkIndex": doc.chunk_ids[0] if doc.chunk_ids else None,
+            "fileName": doc.source_file,
+            "score": round(doc.rrf_score, 4),
+            "snippet": (doc.content or "")[:150],
+        })
         evidences.append({"content": doc.content})
 
     if result_holder:
@@ -401,6 +421,8 @@ async def update_user_status(user_id: int, status: str, config: RunnableConfig =
         return json.dumps({"ok": False, "message": "状态必须是 ACTIVE 或 DISABLED"}, ensure_ascii=False)
     if status == current:
         return _ok({"message": f"用户「{name}」当前已是 {current}，无需变更"})
+    if status == "DISABLED" and admin["user_id"] == user_id:
+        return json.dumps({"ok": False, "message": "不能禁用当前登录的管理员账号"}, ensure_ascii=False)
 
     action_label = "禁用" if status == "DISABLED" else "启用"
     decision = await _confirm_interrupt("update_user_status", f"用户「{name}」(ID {user_id})",
@@ -542,4 +564,147 @@ ADMIN_TOOLS = [
     list_documents, search_knowledge,
     ban_group, unban_group, delete_document,
     list_users, update_user_status, list_audit_logs, generate_report,
+]
+
+
+# ─────────────────────────────────────────────
+# 普通用户工具（CHAT 模式）
+# 注意：Python 模块内函数名不能与 ADMIN 工具重名，
+# 但对外工具名（@tool("...")）与 TODO 方案保持一致。
+# ─────────────────────────────────────────────
+
+def _user_info(config: RunnableConfig) -> Optional[dict]:
+    cfg = (config.get("configurable") or {}) if config else {}
+    user_id = cfg.get("user_id")
+    if not user_id:
+        return None
+    return {"user_id": user_id, "system_role": cfg.get("system_role") or "USER"}
+
+
+async def _user_group_access(user_id: int, system_role: str, group_id: int) -> Optional[str]:
+    """校验用户对群组的访问权。返回 None 表示放行，否则返回拒绝原因。"""
+    from app.dependencies import async_session_factory
+    from app.group.service import require_group_access
+    async with async_session_factory() as s:
+        try:
+            await require_group_access(s, user_id, system_role, group_id)
+            return None
+        except Exception as e:
+            return str(e) or "无权访问该群组"
+
+
+@tool
+async def list_my_groups(config: RunnableConfig = None) -> str:
+    """List groups the current user has joined or owns, with role and status. Use this to find group ids for other group-related queries."""
+    info = _user_info(config)
+    if not info:
+        return json.dumps({"ok": False, "message": "无法识别当前用户"}, ensure_ascii=False)
+    from app.dependencies import async_session_factory
+    from app.group.models import Group, GroupMembership
+    from sqlalchemy import select
+
+    async with async_session_factory() as s:
+        rows = (await s.execute(
+            select(Group, GroupMembership.role)
+            .join(GroupMembership, GroupMembership.group_id == Group.id)
+            .where(GroupMembership.user_id == info["user_id"], Group.status != "DELETED")
+            .order_by(Group.created_at.desc())
+        )).all()
+        groups = [{
+            "groupId": g.id, "groupCode": g.group_code, "groupName": g.group_name,
+            "description": g.description or "", "status": g.status,
+            "myRole": role, "isOwner": g.owner_user_id == info["user_id"],
+        } for g, role in rows]
+    return _ok({"count": len(groups), "groups": groups})
+
+
+@tool("get_group_stats")
+async def user_get_group_stats(group_id: int, config: RunnableConfig = None) -> str:
+    """Get statistics for a group the current user belongs to: document count, storage bytes, member count, owner."""
+    info = _user_info(config)
+    if not info:
+        return json.dumps({"ok": False, "message": "无法识别当前用户"}, ensure_ascii=False)
+    denied = await _user_group_access(info["user_id"], info["system_role"], group_id)
+    if denied:
+        return json.dumps({"ok": False, "message": f"无权访问群组 {group_id}：{denied}"}, ensure_ascii=False)
+    from app.dependencies import async_session_factory
+    from app.group.models import Group, GroupMembership
+    from app.document.models import Document
+    from sqlalchemy import select, func
+
+    async with async_session_factory() as s:
+        g = (await s.execute(select(Group).where(Group.id == group_id, Group.status != "DELETED"))).scalar_one_or_none()
+        if g is None:
+            return json.dumps({"ok": False, "message": f"群组 {group_id} 不存在"}, ensure_ascii=False)
+        mc = (await s.execute(
+            select(func.count()).select_from(GroupMembership).where(GroupMembership.group_id == group_id)
+        )).scalar() or 0
+        row = (await s.execute(
+            select(func.count(), func.coalesce(func.sum(Document.file_size), 0))
+            .where(Document.group_id == group_id, Document.deleted == False)  # noqa: E712
+        )).one()
+        return _ok({
+            "groupId": g.id, "groupCode": g.group_code, "groupName": g.group_name,
+            "status": g.status, "ownerUserId": g.owner_user_id,
+            "memberCount": mc, "documentCount": row[0], "storageBytes": int(row[1] or 0),
+        })
+
+
+@tool("list_group_members")
+async def user_list_group_members(group_id: int, config: RunnableConfig = None) -> str:
+    """List members of a group the current user belongs to, with their roles."""
+    info = _user_info(config)
+    if not info:
+        return json.dumps({"ok": False, "message": "无法识别当前用户"}, ensure_ascii=False)
+    denied = await _user_group_access(info["user_id"], info["system_role"], group_id)
+    if denied:
+        return json.dumps({"ok": False, "message": f"无权访问群组 {group_id}：{denied}"}, ensure_ascii=False)
+    from app.dependencies import async_session_factory
+    from app.group.models import GroupMembership
+    from app.auth.models import User
+    from sqlalchemy import select
+
+    async with async_session_factory() as s:
+        rows = (await s.execute(
+            select(User.id, User.user_code, User.display_name, GroupMembership.role)
+            .join(GroupMembership, GroupMembership.user_id == User.id)
+            .where(GroupMembership.group_id == group_id)
+            .order_by(GroupMembership.role, User.id)
+        )).all()
+        members = [{
+            "userId": uid, "userCode": ucode, "displayName": dname, "role": role,
+        } for uid, ucode, dname, role in rows]
+    return _ok({"groupId": group_id, "count": len(members), "members": members})
+
+
+@tool
+async def list_group_documents(group_id: int, config: RunnableConfig = None) -> str:
+    """List documents in a group the current user belongs to (file name, status, size, upload time)."""
+    info = _user_info(config)
+    if not info:
+        return json.dumps({"ok": False, "message": "无法识别当前用户"}, ensure_ascii=False)
+    denied = await _user_group_access(info["user_id"], info["system_role"], group_id)
+    if denied:
+        return json.dumps({"ok": False, "message": f"无权访问群组 {group_id}：{denied}"}, ensure_ascii=False)
+    from app.dependencies import async_session_factory
+    from app.document.models import Document
+    from sqlalchemy import select
+
+    async with async_session_factory() as s:
+        rows = (await s.execute(
+            select(Document)
+            .where(Document.group_id == group_id, Document.deleted == False)  # noqa: E712
+            .order_by(Document.id.desc())
+            .limit(20)
+        )).scalars().all()
+        docs = [{
+            "documentId": d.id, "fileName": d.file_name, "fileExt": d.file_ext,
+            "fileSize": d.file_size, "status": d.status,
+            "uploadedAt": str(d.uploaded_at or ""),
+        } for d in rows]
+    return _ok({"groupId": group_id, "count": len(docs), "documents": docs})
+
+
+USER_TOOLS = [
+    list_my_groups, user_get_group_stats, user_list_group_members, list_group_documents,
 ]

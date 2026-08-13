@@ -110,6 +110,12 @@ const router = createRouter({
           meta: { title: '管理助手', requireAdmin: true },
         },
         {
+          path: 'admin/api-tokens',
+          name: 'admin-api-tokens',
+          component: () => import('../views/admin/AdminApiTokensView.vue'),
+          meta: { title: 'API 令牌', requireAdmin: true },
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('../views/settings/SettingsView.vue'),

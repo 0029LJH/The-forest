@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
@@ -42,6 +43,8 @@ class EvidenceDocument:
     source_file: str = ""
     evidence_level: str = ""
     rrf_score: float = 0.0
+    document_id: int = 0
+    chunk_id: int = 0
 
 
 @dataclass
@@ -63,6 +66,8 @@ class HybridChunkRetrievalService:
                        planned_queries: List[str], top_k: int = FUSION_TOP_K) -> RetrievedEvidenceBundle:
         candidates: Dict[int, RetrievalCandidate] = {}
 
+        self._t0 = time.perf_counter()
+        logger.info("Retrieval timing: enter retrieve (queries=%d)", len(planned_queries))
         # Run both retrieval channels for all planned queries concurrently.
         # Safe on one event loop: dict mutations are synchronous blocks with no
         # await between read-modify-write, so coroutines cannot interleave them.
@@ -74,8 +79,18 @@ class HybridChunkRetrievalService:
             for query in planned_queries
         ])
 
+        logger.info("Retrieval timing: gather done in %.0fms",
+                    (time.perf_counter() - self._t0) * 1000 if hasattr(self, "_t0") else 0)
         if not candidates:
+            logger.info("Retrieval fusion: 0 candidates (both channels empty)")
             return RetrievedEvidenceBundle.empty()
+
+        # 融合贡献统计：两通道各自命中、交集（RRF 中两通道都命中的 chunk 得分翻倍）
+        v_only = sum(1 for c in candidates.values() if c.vector_score > 0 and c.keyword_score == 0)
+        k_only = sum(1 for c in candidates.values() if c.vector_score == 0 and c.keyword_score > 0)
+        both = sum(1 for c in candidates.values() if c.vector_score > 0 and c.keyword_score > 0)
+        logger.info("Retrieval fusion: candidates=%d (vector_only=%d, es_only=%d, both=%d)",
+                    len(candidates), v_only, k_only, both)
 
         ranked = sorted(candidates.values(), key=lambda c: c.ranking_score, reverse=True)
         ranked = ranked[:top_k]
@@ -88,10 +103,9 @@ class HybridChunkRetrievalService:
                     c.ranking_score = c.ranking_score / max_score
 
         clusters = self._build_clusters(ranked)
-        chunk_ids = [c.chunk_id for c in ranked]
 
-        # Fetch actual chunk text from DB
-        db_rows = await self._fetch_chunk_rows(group_id, chunk_ids)
+        # Fetch actual chunk text from DB (including neighbor windows)
+        db_rows = await self._fetch_chunk_rows(group_id, ranked)
 
         documents = []
         for i, cluster in enumerate(clusters):
@@ -110,6 +124,7 @@ class HybridChunkRetrievalService:
 
     async def _merge_vector_hits(self, candidates: dict, group_id: int, query: str):
         hits = await self.vector_adapter.search(group_id, query, CHANNEL_TOP_K)
+        logger.info("Retrieval vector channel: query=%s hits=%d", query[:50], len(hits))
         for rank, hit in enumerate(hits, start=1):
             c = candidates.setdefault(hit.chunk_id, RetrievalCandidate(
                 chunk_id=hit.chunk_id, document_id=hit.document_id,
@@ -122,6 +137,7 @@ class HybridChunkRetrievalService:
 
     async def _merge_keyword_hits(self, candidates: dict, group_id: int, query: str):
         hits = await es_service.search(group_id, query, CHANNEL_TOP_K)
+        logger.info("Retrieval ES channel: query=%s hits=%d", query[:50], len(hits))
         for rank, hit in enumerate(hits, start=1):
             c = candidates.setdefault(hit.chunk_id, RetrievalCandidate(
                 chunk_id=hit.chunk_id, document_id=hit.document_id,
@@ -148,11 +164,24 @@ class HybridChunkRetrievalService:
         clusters.append(current_cluster)
         return clusters
 
-    async def _fetch_chunk_rows(self, group_id: int, chunk_ids: List[int]) -> dict:
+    async def _fetch_chunk_rows(self, group_id: int, ranked: List[RetrievalCandidate]) -> dict:
         from app.dependencies import async_session_factory
         from app.ingestion.models import DocumentChunk
         from app.document.models import Document
-        from sqlalchemy import select
+        from sqlalchemy import select, tuple_
+
+        # Collect (document_id, chunk_index) windows around every ranked hit.
+        # Neighbors must be looked up by index within the same document — the
+        # global chunk_id is a shared sequence, so id±1 can cross documents.
+        pairs = set()
+        for c in ranked:
+            for offset in range(-DEFAULT_NEIGHBOR_WINDOW, DEFAULT_NEIGHBOR_WINDOW + 1):
+                idx = c.chunk_index + offset
+                if idx >= 0:
+                    pairs.add((c.document_id, idx))
+
+        if not pairs:
+            return {}
 
         # Inner join + exclude soft-deleted documents: leftover vectors of
         # deleted documents must never surface as evidence.
@@ -161,32 +190,29 @@ class HybridChunkRetrievalService:
                 select(DocumentChunk, Document.file_name)
                 .join(Document, DocumentChunk.document_id == Document.id)
                 .where(
-                    DocumentChunk.id.in_(chunk_ids),
+                    tuple_(DocumentChunk.document_id, DocumentChunk.chunk_index).in_(pairs),
+                    DocumentChunk.group_id == group_id,
                     Document.deleted == False,  # noqa: E712
                 )
             )
-            return {row.id: (row, file_name or "未知文件") for row, file_name in result}
+            return {(row.document_id, row.chunk_index): (row, file_name or "未知文件")
+                    for row, file_name in result}
 
     async def _build_document(self, evidence_id: str, db_rows: dict,
                               cluster: List[RetrievalCandidate]) -> Optional[EvidenceDocument]:
         if not cluster:
             return None
 
-        # Expand with neighbor window
-        all_chunk_ids = set()
-        for c in cluster:
-            all_chunk_ids.add(c.chunk_id)
-            for offset in range(-DEFAULT_NEIGHBOR_WINDOW, DEFAULT_NEIGHBOR_WINDOW + 1):
-                if offset != 0:
-                    all_chunk_ids.add(c.chunk_id + offset)
-
+        # Expand with neighbor window (same document, adjacent chunk_index)
         valid_rows = {}
-        for chunk_id in all_chunk_ids:
-            if chunk_id in db_rows:
-                valid_rows[chunk_id] = db_rows[chunk_id]
+        for c in cluster:
+            for offset in range(-DEFAULT_NEIGHBOR_WINDOW, DEFAULT_NEIGHBOR_WINDOW + 1):
+                key = (c.document_id, c.chunk_index + offset)
+                if key[1] >= 0 and key in db_rows and key not in valid_rows:
+                    valid_rows[key] = db_rows[key]
 
-        sorted_ids = sorted(valid_rows.keys())
-        content = "\n\n".join(valid_rows[cid][0].chunk_text for cid in sorted_ids if valid_rows[cid][0].chunk_text)
+        sorted_rows = sorted(valid_rows.items(), key=lambda kv: kv[0][1])
+        content = "\n\n".join(row[0].chunk_text for _, row in sorted_rows if row[0].chunk_text)
 
         if not content.strip():
             return None
@@ -196,7 +222,7 @@ class HybridChunkRetrievalService:
         # vector whose chunk row was deleted (file attribution would be wrong).
         entry = None
         for c in cluster:
-            candidate = db_rows.get(c.chunk_id)
+            candidate = db_rows.get((c.document_id, c.chunk_index))
             if candidate is not None:
                 entry = candidate
                 break
@@ -211,6 +237,8 @@ class HybridChunkRetrievalService:
             chunk_ids=[main_chunk_index],
             source_file=source_file,
             rrf_score=cluster[0].ranking_score,
+            document_id=cluster[0].document_id,
+            chunk_id=entry[0].id,
         )
 
     def _assess_evidence(self, documents: List[EvidenceDocument],
@@ -237,11 +265,12 @@ class HybridChunkRetrievalService:
             return EvidenceLevel.WEAK
 
     def _build_guidance(self, level) -> str:
+        """按证据等级生成强约束回答策略（与证据等级一起传入 LLM）。"""
         from app.qa.query_planning import EvidenceLevel
         if level == EvidenceLevel.SUFFICIENT:
-            return "证据充分"
+            return "当前证据较充分，可以正常回答，但仍然不得超出证据进行臆测。"
         elif level == EvidenceLevel.PARTIAL:
-            return "证据部分充分，回答时请注明不确定性"
+            return "当前证据只覆盖部分问题，只能回答证据明确支持的部分，未覆盖部分必须明确说明不足。"
         elif level == EvidenceLevel.WEAK:
-            return "证据较弱"
-        return "无相关证据"
+            return "当前证据相关性有限，只能谨慎回答，必须明确说明依据有限，不能给出确定性结论。"
+        return "当前没有可用证据，必须直接拒答。"

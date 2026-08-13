@@ -121,7 +121,8 @@ async def list_messages(
     db: AsyncSession = Depends(get_db),
 ):
     service = AssistantService(db)
-    messages = await service.list_messages(session_id, before_id=before_id, limit=limit)
+    messages = await service.list_messages(current_user.user_id, session_id,
+                                           before_id=before_id, limit=limit)
     return ApiResponse.ok(data=messages)
 
 
@@ -133,7 +134,7 @@ async def get_context(
     db: AsyncSession = Depends(get_db),
 ):
     service = AssistantService(db)
-    ctx = await service.get_context(session_id, recent_limit)
+    ctx = await service.get_context(current_user.user_id, session_id, recent_limit)
     return ctx  # Frontend expects direct object
 
 
@@ -143,6 +144,13 @@ async def chat(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if request.tool_mode == "ADMIN" and current_user.system_role != "ADMIN":
+        from app.common.exception.exceptions import ForbiddenException
+        raise ForbiddenException("无权使用管理助手")
+    if request.tool_mode == "ADMIN":
+        # 管理助手写操作需 interrupt 确认（依赖流式交互），非流式端点不支持
+        from app.common.exception.exceptions import BusinessException
+        raise BusinessException("管理助手仅支持流式对话（/chat/stream）")
     service = AssistantService(db)
     if request.group_id is not None:
         await require_group_access(db, current_user.user_id, current_user.system_role, request.group_id)
@@ -180,7 +188,7 @@ async def chat_stream(
                 yield f"event: delta\ndata: {json.dumps({'delta': ev['data']}, ensure_ascii=False)}\n\n"
             else:
                 yield f"event: {event_name}\ndata: {json.dumps(ev['data'], ensure_ascii=False)}\n\n"
-        yield 'event: done\ndata: {"event":"done","reply":"","citations":[]}\n\n'
+        # done 事件由 service 在落库后发出（含 reply/citations/messageId），这里不再补发
 
     return StreamingResponse(
         event_generator(),

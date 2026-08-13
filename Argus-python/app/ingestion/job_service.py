@@ -95,4 +95,33 @@ class IngestionJobWorker:
         await session.flush()
 
 
+async def recover_interrupted_jobs() -> int:
+    """On startup, mark RUNNING jobs orphaned by a previous process crash as
+    FAILED and reset their documents so they can be retried from the UI."""
+    from app.dependencies import async_session_factory
+    from app.document.models import Document
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(IngestionJob).where(IngestionJob.status == "RUNNING")
+        )
+        jobs = result.scalars().all()
+        if not jobs:
+            return 0
+
+        reason = "任务中断：服务重启，请重试"
+        for job in jobs:
+            job.status = "FAILED"
+            job.last_error = reason
+            job.finished_at = utcnow()
+        await session.execute(
+            update(Document)
+            .where(Document.id.in_([j.document_id for j in jobs]))
+            .values(status="FAILED", failure_reason=reason)
+        )
+        await session.commit()
+        logger.warning("Recovered %d interrupted ingestion jobs", len(jobs))
+        return len(jobs)
+
+
 worker = IngestionJobWorker()

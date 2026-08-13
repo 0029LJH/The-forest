@@ -43,8 +43,11 @@ async def lifespan(app: FastAPI):
     if settings.dev_admin.enabled:
         await _seed_dev_admin()
 
-    # Start ingestion worker (document ETL pipeline)
-    from app.ingestion.job_service import worker
+    # Recover jobs orphaned by a previous crash, then start the worker
+    from app.ingestion.job_service import worker, recover_interrupted_jobs
+    interrupted = await recover_interrupted_jobs()
+    if interrupted:
+        logger.warning("Marked %d interrupted ingestion jobs as FAILED", interrupted)
     await worker.start()
 
     # Periodic maintenance: expired upload sessions
@@ -119,6 +122,8 @@ from app.metrics.router import router as metrics_router
 from app.models_config.router import router as model_config_router
 from app.audit.router import router as audit_router
 from app.system.router import router as system_router
+from app.api_token.router import router as api_token_admin_router
+from app.open.router import router as open_router
 
 app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 app.include_router(user_router, prefix="/api", tags=["User"])
@@ -134,6 +139,8 @@ app.include_router(metrics_router, prefix="/api/admin/metrics", tags=["Metrics"]
 app.include_router(model_config_router, prefix="/api/admin", tags=["Model Config"])
 app.include_router(audit_router, prefix="/api/admin", tags=["Audit"])
 app.include_router(system_router, prefix="/api/admin", tags=["System"])
+app.include_router(api_token_admin_router, prefix="/api/admin", tags=["API Tokens"])
+app.include_router(open_router)
 
 
 async def _init_database(engine):
@@ -150,6 +157,7 @@ async def _init_database(engine):
     import app.metrics.models as _mm    # noqa: F401
     import app.models_config.models as _mcm  # noqa: F401
     import app.audit.models as _audit   # noqa: F401
+    import app.api_token.models as _atm  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -161,6 +169,12 @@ async def _init_database(engine):
         await conn.execute(text(
             "ALTER TABLE assistant_sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(32) DEFAULT 'CHAT'"
         ))
+
+    # pgvector table + HNSW/GIN indexes — ensure before the first QA request
+    # can hit them (previously only created lazily during ingestion, so a
+    # fresh database 500'd on the first QA attempt)
+    from app.engine.vector_store import PgVectorRetrievalAdapter
+    await PgVectorRetrievalAdapter(settings.database_url).ensure_table()
     logger.info("Database tables initialized")
 
 

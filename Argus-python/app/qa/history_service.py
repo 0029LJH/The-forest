@@ -42,17 +42,32 @@ class QaHistoryService:
         )
         rows = result.all()
 
-        # 每个会话的首条用户问题 + 末条回答摘要
+        # 每会话的消息数 / 首条用户问题 / 末条回答：3 次聚合查询替代 N+1
+        session_ids = [s.id for s, *_ in rows]
+        count_map: dict = {}
+        first_user_map: dict = {}
+        last_answer_map: dict = {}
+        if session_ids:
+            count_map = dict((await self.session.execute(
+                select(QaMessage.session_id, func.count())
+                .where(QaMessage.session_id.in_(session_ids))
+                .group_by(QaMessage.session_id)
+            )).all())
+            first_user_map = dict((await self.session.execute(
+                select(QaMessage.session_id, QaMessage.content)
+                .where(QaMessage.session_id.in_(session_ids), QaMessage.role == "USER")
+                .distinct(QaMessage.session_id)
+                .order_by(QaMessage.session_id, QaMessage.id)
+            )).all())
+            last_answer_map = dict((await self.session.execute(
+                select(QaMessage.session_id, QaMessage.content)
+                .where(QaMessage.session_id.in_(session_ids), QaMessage.role == "ASSISTANT")
+                .distinct(QaMessage.session_id)
+                .order_by(QaMessage.session_id, QaMessage.id.desc())
+            )).all())
+
         items = []
         for s, uname, ucode, gname in rows:
-            msg_result = await self.session.execute(
-                select(QaMessage.role, QaMessage.content, QaMessage.reason_code)
-                .where(QaMessage.session_id == s.id)
-                .order_by(QaMessage.id)
-            )
-            msgs = msg_result.all()
-            question = next((m.content for m in msgs if m.role == "USER"), "")
-            answer = next((m.content for m in reversed(msgs) if m.role == "ASSISTANT"), "")
             items.append({
                 "sessionId": s.id,
                 "userId": s.user_id,
@@ -63,9 +78,9 @@ class QaHistoryService:
                 "title": s.title,
                 # Full texts — the frontend truncates visually and shows the
                 # complete content in the hover tooltip
-                "question": question,
-                "answerPreview": answer,
-                "messageCount": len(msgs),
+                "question": first_user_map.get(s.id, ""),
+                "answerPreview": last_answer_map.get(s.id, ""),
+                "messageCount": count_map.get(s.id, 0),
                 "createdAt": _fmt(s.created_at),
             })
 

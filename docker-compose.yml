@@ -34,9 +34,10 @@ services:
       interval: 5s
       retries: 5
 
-  # ── Elasticsearch + IK 中文分词 ──
+  # ── Elasticsearch + IK 中文分词（官方镜像构建时装 analysis-ik 插件） ──
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    build: ./elasticsearch-ik
+    image: argus-es-ik:8.15.0
     container_name: argus-es
     environment:
       discovery.type: single-node

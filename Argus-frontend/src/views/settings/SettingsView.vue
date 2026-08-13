@@ -19,13 +19,13 @@ const modelExpanded = ref(false)
 
 interface ModelConfigItem {
   id: number
-  model_type: string
-  display_name: string
-  base_url: string
-  api_key: string
-  model_name: string
-  is_active: boolean
-  created_at: string | null
+  modelType: string
+  displayName: string
+  baseUrl: string
+  apiKey: string
+  modelName: string
+  isActive: boolean
+  createdAt: string | null
 }
 
 const chatModels = ref<ModelConfigItem[]>([])

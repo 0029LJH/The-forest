@@ -26,8 +26,7 @@ import type {
   AssistantToolCall,
   AssistantToolMode,
 } from '@/types/assistant'
-import type { DocumentItem } from '@/api/document'
-import DocumentPreviewModal from '@/components/DocumentPreviewModal.vue'
+import ChunkPreviewModal from '@/components/ChunkPreviewModal.vue'
 import AssistantSidebar from './components/AssistantSidebar.vue'
 import AssistantTranscript from './components/AssistantTranscript.vue'
 import AssistantComposer from './components/AssistantComposer.vue'
@@ -86,6 +85,17 @@ function localId(): string {
 }
 
 function toUi(m: AssistantMessageItem): UiAssistantMessage {
+  let citations: AssistantCitationItem[] = []
+  try {
+    // structured_payload 是 JSON 列，后端可能返回对象或字符串
+    const payload =
+      typeof m.structuredPayload === 'string' ? JSON.parse(m.structuredPayload) : m.structuredPayload
+    if (payload && Array.isArray(payload.citations)) {
+      citations = payload.citations
+    }
+  } catch {
+    // malformed structuredPayload should never break rendering
+  }
   return {
     localId: `srv-${m.messageId}`,
     messageId: m.messageId,
@@ -94,6 +104,7 @@ function toUi(m: AssistantMessageItem): UiAssistantMessage {
     toolMode: m.toolMode,
     groupId: m.groupId,
     createdAt: m.createdAt,
+    citations,
   }
 }
 
@@ -464,7 +475,7 @@ async function resumeInterrupted(target: UiAssistantMessage, value: string) {
         toolMode: target.toolMode ?? 'ADMIN',
         resume: value,
       },
-      authStore.accessToken,
+      authStore.accessToken!,
       {
         signal: streamAbort.signal,
         onEvent: (ev) => onStreamEvent(ev, target),
@@ -522,33 +533,25 @@ function handleStarterPick(prompt: string, starterMode: AssistantToolMode) {
   composerRef.value?.setText(prompt)
 }
 
-// ── Citation preview bridge ──
-const previewVisible = ref(false)
-const previewDocument = ref<DocumentItem | null>(null)
+// ── Citation chunk preview bridge ──
+const chunkPreviewVisible = ref(false)
+const chunkPreviewDoc = ref<{
+  documentId: number
+  fileName: string
+  chunkId: number | null
+  chunkIndex: number | null
+} | null>(null)
 
 function openCitation(c: AssistantCitationItem) {
-  if (c.documentId === null) return
-  // Use currently selected group as best guess — KB_SEARCH tracks it precisely
-  const groupId = selectedGroupId.value
-  if (groupId === null) return
-  const idx = c.fileName.lastIndexOf('.')
-  const ext = idx >= 0 ? c.fileName.slice(idx + 1).toLowerCase() : null
-  previewDocument.value = {
+  // 旧格式引用（无 documentId）显示但不可点；documentId == null 同时覆盖 undefined
+  if (c.documentId == null) return
+  chunkPreviewDoc.value = {
     documentId: c.documentId,
-    groupId,
-    fileName: c.fileName,
-    fileExt: ext,
-    contentType: null,
-    fileSize: 0,
-    status: 'READY',
-    failureReason: null,
-    uploadedAt: '',
-    uploaderUserId: null,
-    uploaderDisplayName: null,
-    uploaderUserCode: null,
-    previewText: c.snippet,
+    fileName: c.fileName ?? '未知文件',
+    chunkId: c.chunkId ?? null,
+    chunkIndex: c.chunkIndex ?? null,
   }
-  previewVisible.value = true
+  chunkPreviewVisible.value = true
 }
 
 // ── Init ──
@@ -628,10 +631,13 @@ onMounted(async () => {
       />
     </main>
 
-    <DocumentPreviewModal
-      :visible="previewVisible"
-      :document="previewDocument"
-      @update:visible="(v: boolean) => (previewVisible = v)"
+    <ChunkPreviewModal
+      :visible="chunkPreviewVisible"
+      :document-id="chunkPreviewDoc?.documentId ?? null"
+      :file-name="chunkPreviewDoc?.fileName ?? ''"
+      :chunk-id="chunkPreviewDoc?.chunkId ?? null"
+      :chunk-index="chunkPreviewDoc?.chunkIndex ?? null"
+      @update:visible="(v: boolean) => (chunkPreviewVisible = v)"
     />
   </div>
 </template>

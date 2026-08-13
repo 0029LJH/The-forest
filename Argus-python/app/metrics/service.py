@@ -41,6 +41,10 @@ class LlmUsageStatisticsService:
         today_success = t.success_count or 0
         today_success_rate = (today_success / today_calls * 100) if today_calls > 0 else 100.0
 
+        # All-time call count (the field is named total_calls — it used to
+        # mistakenly carry the "today" figure)
+        total_calls = await self._count(LlmUsageRecord)
+
         # daily trend (last 30 days, zero-filled so the chart line is continuous)
         since = utcnow() - timedelta(days=30)
         trend_result = await self.session.execute(
@@ -74,7 +78,7 @@ class LlmUsageStatisticsService:
             "total_groups": total_groups,
             "total_documents": total_documents,
             "total_chunks": total_chunks,
-            "total_calls": t.calls or 0,
+            "total_calls": total_calls,
             "daily_trend": daily_trend,
         }
 

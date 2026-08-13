@@ -27,7 +27,7 @@ function renderKatex(text: string, raw: string, display: boolean): string {
 
 const inlineMath = {
   name: 'inlineMath',
-  level: 'inline',
+  level: 'inline' as const,
   start(src: string) {
     const candidates = [src.indexOf('$'), src.indexOf('\\(')].filter((i) => i >= 0)
     return candidates.length > 0 ? Math.min(...candidates) : undefined
@@ -46,7 +46,7 @@ const inlineMath = {
 
 const blockMath = {
   name: 'blockMath',
-  level: 'block',
+  level: 'block' as const,
   start(src: string) {
     const candidates = [src.indexOf('$$'), src.indexOf('\\[')].filter((i) => i >= 0)
     return candidates.length > 0 ? Math.min(...candidates) : undefined

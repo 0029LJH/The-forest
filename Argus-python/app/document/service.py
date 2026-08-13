@@ -93,7 +93,7 @@ class DocumentUploadService:
             session_entity.status = UPLOAD_STATUS_UPLOADING
 
         object_key = f"uploads/{upload_id}/chunks/{chunk_index:06d}"
-        storage_service.upload(object_key, chunk_data, "application/octet-stream")
+        await storage_service.upload(object_key, chunk_data, "application/octet-stream")
 
         chunk = DocumentUploadChunk(
             upload_id=upload_id,
@@ -141,7 +141,7 @@ class DocumentUploadService:
         # Compose in MinIO
         merged_key = f"documents/{session_entity.group_id}/{uuid.uuid4().hex}/{session_entity.file_name}"
         source_keys = [c.storage_object_key for c in chunks]
-        storage_service.compose(merged_key, source_keys, session_entity.content_type)
+        await storage_service.compose(merged_key, source_keys, session_entity.content_type)
 
         session_entity.merged_object_key = merged_key
         session_entity.status = UPLOAD_STATUS_COMPLETED
@@ -197,7 +197,7 @@ class DocumentUploadService:
             return {"document_id": existing.id, "file_name": existing.file_name, "is_duplicate": True}
 
         object_key = f"documents/{group_id}/{uuid.uuid4().hex}/{file_name}"
-        storage_service.upload(object_key, file_data, content_type)
+        await storage_service.upload(object_key, file_data, content_type)
 
         ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
         doc = Document(
@@ -273,7 +273,7 @@ class DocumentQueryService:
         doc = await self._get_doc(document_id)
         # Load full text from stored object for preview
         try:
-            data = storage_service.download(doc.storage_object_key)
+            data = await storage_service.download(doc.storage_object_key)
             full_text = data.decode("utf-8", errors="replace")
         except Exception:
             full_text = doc.preview_text or ""
@@ -287,7 +287,7 @@ class DocumentQueryService:
 
     async def download(self, document_id: int) -> tuple[bytes, str, str]:
         doc = await self._get_doc(document_id)
-        data = storage_service.download(doc.storage_object_key)
+        data = await storage_service.download(doc.storage_object_key)
         return data, doc.file_name, doc.content_type
 
     async def delete(self, user_id: int, document_id: int) -> dict:
@@ -335,7 +335,7 @@ class DocumentQueryService:
 
         # 5. Delete MinIO object
         try:
-            storage_service.delete(doc.storage_object_key)
+            await storage_service.delete(doc.storage_object_key)
         except Exception as e:
             cleanup["storage"] = False
             logger.error("Failed to delete MinIO object %s: %s", doc.storage_object_key, e)

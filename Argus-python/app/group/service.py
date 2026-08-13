@@ -345,16 +345,22 @@ class GroupJoinRequestService:
             for r, uname, dname in result
         ]
 
-    async def process_request(self, owner_id: int, request_id: int, approved: bool) -> None:
+    async def process_request(self, owner_id: int, group_id: int, request_id: int, approved: bool) -> None:
+        # Row lock serializes concurrent approvals of the same request: the
+        # second one blocks until the first commits, then sees the new status
+        # (double-click used to race into a unique-constraint 500).
         result = await self.session.execute(
             select(GroupJoinRequest, Group)
             .join(Group, GroupJoinRequest.group_id == Group.id)
             .where(GroupJoinRequest.id == request_id)
+            .with_for_update(of=GroupJoinRequest)
         )
         row = result.one_or_none()
         if row is None:
             raise BusinessException("申请不存在")
         req, group = row
+        if req.group_id != group_id:
+            raise BusinessException("申请不属于该群组")
         if group.owner_user_id != owner_id:
             raise ForbiddenException("只有群组所有者可以审批申请")
         if req.status != REQUEST_STATUS_PENDING:
@@ -394,6 +400,14 @@ class GroupInvitationService:
             raise BusinessException("群组不存在")
         if group.owner_user_id != inviter_id:
             raise ForbiddenException("只有群组所有者可以邀请")
+
+        # 校验被邀请用户存在且未被禁用（防 FK 错误 500）
+        from app.auth.models import User
+        invitee = (await self.session.execute(
+            select(User.id).where(User.id == invitee_user_id, User.status == "ACTIVE")
+        )).scalar_one_or_none()
+        if invitee is None:
+            raise BusinessException("被邀请用户不存在或已被禁用")
 
         result = await self.session.execute(
             select(GroupMembership).where(
@@ -459,8 +473,12 @@ class GroupInvitationService:
         ]
 
     async def respond_invitation(self, user_id: int, invitation_id: int, accepted: bool) -> None:
+        # Row lock: concurrent accept/reject of the same invitation would
+        # otherwise race into a unique-constraint 500 on the membership row.
         result = await self.session.execute(
-            select(GroupInvitation).where(GroupInvitation.id == invitation_id)
+            select(GroupInvitation)
+            .where(GroupInvitation.id == invitation_id)
+            .with_for_update()
         )
         inv = result.scalar_one_or_none()
         if inv is None:

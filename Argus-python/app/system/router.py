@@ -38,7 +38,7 @@ async def system_health(
     # MinIO
     try:
         from app.engine.storage import storage_service
-        exists = storage_service.client.bucket_exists(storage_service.bucket)
+        exists = await storage_service.check_health()
         minio = {"ok": exists, "message": "正常" if exists else f"bucket {storage_service.bucket} 不存在"}
     except Exception as e:
         minio = {"ok": False, "message": str(e)[:120]}
