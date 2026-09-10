@@ -138,7 +138,7 @@ cd forest-frontend
 npm install && npm run dev
 ```
 
-访问 `http://localhost:5173`，默认管理员：`admin` / `Admin@123456`
+访问 `http://localhost:5888`，默认管理员：`admin` / `Admin@123456`
 
 ## 项目结构
 

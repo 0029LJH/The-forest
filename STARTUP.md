@@ -113,11 +113,11 @@ npm install
 npm run dev
 ```
 
-前端运行在 `http://localhost:5173`，Vite 代理自动将 `/api` 转发到 `http://localhost:10001`。
+前端运行在 `http://localhost:5888`，Vite 代理自动将 `/api` 转发到 `http://localhost:10001`。
 
 ## 6. 首次使用
 
-1. 访问 `http://localhost:5173`
+1. 访问 `http://localhost:5888`
 2. 管理员登录：`admin` / `Admin@123456`
 3. 创建协作小组（知识库）
 4. 上传文档（PDF / DOCX / TXT / MD）
