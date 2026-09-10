@@ -1,8 +1,8 @@
-services:
+﻿services:
   # ── PostgreSQL + pgvector ──
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: argus-pg
+    container_name: forest-pg
     environment:
       POSTGRES_DB: new_rag
       POSTGRES_USER: postgres
@@ -19,7 +19,7 @@ services:
   # ── MinIO 对象存储 ──
   minio:
     image: minio/minio:latest
-    container_name: argus-minio
+    container_name: forest-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -37,8 +37,8 @@ services:
   # ── Elasticsearch + IK 中文分词（官方镜像构建时装 analysis-ik 插件） ──
   elasticsearch:
     build: ./elasticsearch-ik
-    image: argus-es-ik:8.15.0
-    container_name: argus-es
+    image: forest-es-ik:8.15.0
+    container_name: forest-es
     environment:
       discovery.type: single-node
       xpack.security.enabled: false

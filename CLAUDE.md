@@ -1,10 +1,10 @@
-# CLAUDE.md
+﻿# CLAUDE.md
 
 This file provides guidance to Claude Code when working with code in this repository.
 
 ## Project Overview
 
-Argus is a RAG (Retrieval-Augmented Generation) knowledge base platform with:
+forest is a RAG (Retrieval-Augmented Generation) knowledge base platform with:
 - **Backend**: Python FastAPI + SQLAlchemy async + PostgreSQL/pgvector
 - **Frontend**: Vue 3 + TypeScript + Vite + Element Plus
 - **Infrastructure**: Docker Compose (PostgreSQL, MinIO, Elasticsearch)
@@ -14,13 +14,13 @@ Argus is a RAG (Retrieval-Augmented Generation) knowledge base platform with:
 
 ```bash
 # Backend (Python)
-cd Argus-python
+cd forest-backend
 pip install -r requirements.txt
 python init_db.py              # Initialize DB tables + seed admin
 uvicorn app.main:app --host 0.0.0.0 --port 10001 --reload
 
 # Frontend (Vue 3)
-cd Argus-frontend
+cd forest-frontend
 npm install
 npm run dev                    # Dev server on http://localhost:5173
 
@@ -47,7 +47,7 @@ docker compose down            # Stop (data preserved in volumes)
 ## Architecture
 
 ```
-Argus-python/app/
+forest-backend/app/
 ├── main.py                        # FastAPI entry, lifespan, routers, periodic cleanup task
 ├── config.py                      # Pydantic Settings (env_file=.env)
 ├── dependencies.py                # Async engine + session factory
@@ -99,8 +99,8 @@ Argus-python/app/
 - `get_current_user` → returns `AuthenticatedUser` record (also sets `UserContext` — read in `LoggingMiddleware` for `userId=` in access logs)
 - `require_admin` → admin-only routes
 - Refresh token stored as httpOnly cookie (`path=/api`, `SameSite=Lax`)
-- Access token persisted in `localStorage` (argus_access_token) for page refresh survival
-- Account switcher saves up to 5 accounts in localStorage (argus_accounts)
+- Access token persisted in `localStorage` (forest_access_token) for page refresh survival
+- Account switcher saves up to 5 accounts in localStorage (forest_accounts)
 
 ### Authorization
 - `require_group_access(db, user_id, system_role, group_id)` (group/service.py) — admins bypass; members of ACTIVE groups pass; DISABLED/DELETED groups → 403
@@ -134,9 +134,9 @@ Argus-python/app/
 - ISO format `+ "Z"` suffix on serialization (all `_fmt` helpers) to ensure correct browser parsing
 
 ### Configuration
-- **.env file**: `Argus-python/.env` (copy from `.env.example` — placeholder keys only)
+- **.env file**: `forest-backend/.env` (copy from `.env.example` — placeholder keys only)
 - **Active models**: Admins can override via System Settings → Add Model (stored in `model_configs` table, falls back to `.env`); query planning, QA generation, auto-title and memory summaries all resolve via `get_chat_config(user_id)`
-- **Default admin**: admin@argus.local / Admin@123456 (seeded by `init_db.py` or `_seed_dev_admin()`)
+- **Default admin**: admin@forest.local / Admin@123456 (seeded by `init_db.py` or `_seed_dev_admin()`)
 - **Vite proxy**: `/api` → `http://localhost:10001` (configured in `vite.config.ts`)
 
 ### Docs

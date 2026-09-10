@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 <img src="https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12"/>
 <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI"/>
@@ -11,7 +11,7 @@
 
 <br/>
 
-<h1 align="center">Argus — RAG 知识库平台</h1>
+<h1 align="center">forest — RAG 知识库平台</h1>
 
 <p align="center">
   <strong>融合 RAG 与 AI Agent 技术的企业级智能知识平台</strong>
@@ -25,9 +25,9 @@
 
 ## 项目简介
 
-**Argus** 是一个从底层构建的 **RAG（检索增强生成）知识库平台**，将企业私有文档与大语言模型深度融合，解决 LLM 在垂直领域应用中的三大核心痛点：
+**forest** 是一个从底层构建的 **RAG（检索增强生成）知识库平台**，将企业私有文档与大语言模型深度融合，解决 LLM 在垂直领域应用中的三大核心痛点：
 
-| 痛点 | Argus 的解决方案 |
+| 痛点 | forest 的解决方案 |
 |------|-----------------|
 | 幻觉编造 | 向量 + ES 混合检索 + 四级证据评估，证据不足时主动拒答 |
 | 知识割裂 | 文档上传 → 解析 → 切片 → 向量化 → ES 索引，全链路自动化 |
@@ -111,19 +111,10 @@
 ![知识库问答](./docs/images/知识库问答.png)
 
 ### AI 助手
-![AI助手](./docs/images/AI助手.png)
+![AI助手](./docs/images/ai助手.png)
 
 ### 协作小组
-![协作小组](./docs/images/协作小组.png)
-
-### 用户文档管理
-![用户文档管理](./docs/images/用户文档管理.png)
-
-### 使用统计
-![使用统计](./docs/images/使用统计.png)
-
-### 管理员界面
-![管理员界面](./docs/images/管理员界面.png)
+![协作小组](./docs/images/小组协作.png)
 
 ## 快速开始
 
@@ -134,7 +125,7 @@
 docker compose up -d
 
 # 2. 配置后端
-cd Argus-python
+cd forest-python
 cp .env.example .env   # 编辑 API Key
 pip install -r requirements.txt
 python init_db.py
@@ -143,7 +134,7 @@ python init_db.py
 uvicorn app.main:app --host 0.0.0.0 --port 10001 --reload
 
 # 4. 启动前端
-cd Argus-frontend
+cd forest-frontend
 npm install && npm run dev
 ```
 
@@ -152,9 +143,9 @@ npm install && npm run dev
 ## 项目结构
 
 ```
-Argus/
+forest/
 ├── docker-compose.yml              # PostgreSQL + MinIO + Elasticsearch
-├── Argus-python/                   # Python FastAPI 后端
+├── forest-python/                   # Python FastAPI 后端
 │   ├── app/
 │   │   ├── main.py                 #   入口、生命周期、周期清理任务
 │   │   ├── config.py               #   配置（.env 加载）
@@ -172,7 +163,7 @@ Argus/
 │   │   └── engine/                 #   基础设施（PG/ES/MinIO）
 │   ├── init_db.py                  #   数据库初始化
 │   └── .env.example                #   环境变量模板（占位 Key）
-└── Argus-frontend/                 # Vue 3 前端
+└── forest-frontend/                 # Vue 3 前端
     └── src/
         ├── api/                    #   后端 API 封装
         ├── views/                  #   页面组件

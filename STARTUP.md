@@ -1,4 +1,4 @@
-# Argus RAG Platform — 启动教程
+﻿# forest RAG Platform — 启动教程
 
 ## 1. 环境要求
 
@@ -41,14 +41,14 @@ docker compose ps
 ### 3.1 创建 Conda 环境
 
 ```bash
-conda create -n argus python=3.12 -y
-conda activate argus
+conda create -n forest python=3.12 -y
+conda activate forest
 ```
 
 ### 3.2 安装依赖
 
 ```bash
-cd D:\AI_code\RAG2.0\Argus-python
+cd D:\AI_code\RAG2.0\forest-backend
 pip install -r requirements.txt
 ```
 
@@ -86,7 +86,7 @@ python init_db.py
 ```
 INFO:init_db:pgvector extension enabled
 INFO:init_db:All tables created
-INFO:init_db:Admin seeded: admin@argus.local / Admin@123456
+INFO:init_db:Admin seeded: admin@forest.local / Admin@123456
 ```
 
 ## 4. 启动后端
@@ -108,7 +108,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 10001 --reload
 打开新终端：
 
 ```bash
-cd D:\AI_code\RAG2.0\Argus-frontend
+cd D:\AI_code\RAG2.0\forest-frontend
 npm install
 npm run dev
 ```
@@ -134,7 +134,7 @@ docker compose down                  # 停止（数据保留）
 docker compose down -v               # 停止并清除数据
 
 # 数据库
-docker exec -it argus-pg psql -U postgres -d new_rag  # 进入 PG
+docker exec -it forest-pg psql -U postgres -d new_rag  # 进入 PG
 python init_db.py                                      # 重新初始化
 
 # MinIO Console

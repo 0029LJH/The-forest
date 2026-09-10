@@ -1,0 +1,18 @@
+name: gte-rerank-v2
+label: GTE Rerank V2
+provider: dashscope
+kind: reranker
+status: active
+description: 阿里达摩院多语言重排序模型（DashScope OpenAI 兼容）
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+context_size: 512
+batch_limit: 8
+parameters:
+  rerank_enabled:
+    type: boolean
+    title: 启用重排序
+    description: 是否在检索后使用 cross-encoder 重排序提升精度
+    default: true

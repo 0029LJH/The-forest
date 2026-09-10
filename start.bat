@@ -1,9 +1,9 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
-title Argus Platform
+title forest Platform
 
 echo ============================================
-echo   Argus RAG Platform
+echo   forest RAG Platform
 echo ============================================
 echo.
 
@@ -44,7 +44,7 @@ if %errorlevel% neq 0 (
 )
 
 REM Check for port 5432 conflict (local PostgreSQL service)
-netstat -ano | findstr ":5432.*LISTENING" >nul 2>&1
+powershell -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 5432 -ErrorAction SilentlyContinue; if($c){exit 1}else{exit 0}"
 if %errorlevel% equ 0 (
     echo   [WARN] Port 5432 is occupied - local PostgreSQL may be running.
     echo   Run as Administrator: net stop postgresql-x64-18
@@ -54,7 +54,7 @@ if %errorlevel% equ 0 (
 )
 
 docker compose down >nul 2>&1
-docker rm -f argus-pg argus-minio argus-es >nul 2>&1
+docker rm -f forest-pg forest-minio forest-es >nul 2>&1
 docker compose up -d
 echo   Waiting for services to be healthy...
 timeout /t 10 /nobreak >nul
@@ -62,17 +62,23 @@ echo   [OK] Infrastructure running
 
 echo.
 echo [2/3] Starting Backend on port 10001...
-start "Argus-Backend" cmd /k "cd /d %~dp0Argus-python && conda run -n argus --no-capture-output python -m uvicorn app.main:app --host 0.0.0.0 --port 10001 --reload"
+start "forest-Backend" cmd /k "cd /d %~dp0forest-python && D:\python\Python313\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 10001 --reload"
 
 echo.
-echo [3/3] Starting Frontend on port 5173...
-start "Argus-Frontend" cmd /k "cd /d %~dp0Argus-frontend && npm run dev"
+echo [3/3] Starting Frontend on port 5888...
+REM Ensure port 5888 is free before starting frontend
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5888.*LISTENING"') do (
+    echo   [INFO] Port 5888 is in use by PID %%a, terminating...
+    taskkill /F /PID %%a >nul 2>&1
+)
+timeout /t 1 /nobreak >nul
+start "forest-frontend" cmd /k "cd /d %~dp0forest-frontend && npm run dev"
 
 echo.
 echo ============================================
-echo   Argus Platform Started!
+echo   forest Platform Started!
 echo.
-echo   Frontend : http://localhost:5173
+echo   Frontend : http://localhost:5888
 echo   API Docs : http://localhost:10001/docs
 echo.
 echo   Login    : admin / Admin@123456

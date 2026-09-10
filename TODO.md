@@ -1,4 +1,4 @@
-# TODO
+﻿# TODO
 
 > 本文件记录待实施的方案。分节记录，各自独立。
 
@@ -109,7 +109,7 @@ docker-compose.yml 中 ES 用的是官方原版镜像（`docker.elastic.co/elast
 ## 方案（推荐 A）
 
 - **A. 换镜像（推荐）**：`image: medcl/elasticsearch:8.15.0`（ik 作者维护，版本对齐官方）→ `docker compose up -d elasticsearch` 重建。改一行，1 分钟。
-- B. 手动装进现有容器：`docker exec argus-es bin/elasticsearch-plugin install --batch https://get.infini.cloud/elasticsearch/analysis-ik/8.15.0` + restart。容器重建后需重装，不持久。
+- B. 手动装进现有容器：`docker exec forest-es bin/elasticsearch-plugin install --batch https://get.infini.cloud/elasticsearch/analysis-ik/8.15.0` + restart。容器重建后需重装，不持久。
 - C. Dockerfile 自定义镜像（最正规，多一个文件，build 流程带插件）。
 
 ## 数据影响与恢复
