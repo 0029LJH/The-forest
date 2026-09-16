@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 <img src="https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12"/>
 <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI"/>
@@ -11,181 +11,254 @@
 
 <br/>
 
-<h1 align="center">forest — RAG 知识库平台</h1>
+<h1 align="center">forest — 企业级 RAG 知识库平台</h1>
 
 <p align="center">
-  <strong>融合 RAG 与 AI Agent 技术的企业级智能知识平台</strong>
+  <strong>基于检索增强生成 (RAG) 的企业智能知识管理系统</strong>
 </p>
 
 <p align="center">
-  文档上传 · 智能解析 · 混合检索 · AI 对话 · 引用溯源 · 管理控制台
+  📄 多格式文档解析 &nbsp;·&nbsp; 🔍 混合检索引擎 &nbsp;·&nbsp; 💬 AI 智能对话 &nbsp;·&nbsp; 📊 全链路可观测
 </p>
 
 ---
 
-## 项目简介
+## 概述
 
-**forest** 是一个从底层构建的 **RAG（检索增强生成）知识库平台**，将企业私有文档与大语言模型深度融合，解决 LLM 在垂直领域应用中的三大核心痛点：
+forest 是一款专为组织设计的**企业级知识库解决方案**，核心能力包括：
 
-| 痛点 | forest 的解决方案 |
-|------|-----------------|
-| 幻觉编造 | 向量 + ES 混合检索 + 四级证据评估，证据不足时主动拒答 |
-| 知识割裂 | 文档上传 → 解析 → 切片 → 向量化 → ES 索引，全链路自动化 |
-| 无记忆对话 | ReactAgent + 短期记忆，支持跨轮次上下文感知对话 |
-| 不可观测 | 完整管理控制台：全局文档/群组、问答历史、检索质量、审计留痕 |
+| 能力维度 | 说明 |
+|---------|------|
+| **智能问答** | 基于 RAG 技术的精准知识检索与生成 |
+| **文档管理** | 支持 PDF/DOCX/MD/TXT 的多格式解析与存储 |
+| **AI 助手** | 具备记忆能力的对话式智能体 |
+| **团队协作** | 群组隔离、权限管控的协作机制 |
+| **运维监控** | 完整的管理控制台与审计能力 |
 
-## 技术栈
+---
 
-### 后端
-- **Python 3.12** / **FastAPI** — 异步 Web 框架
-- **SQLAlchemy 2.0 async** + **asyncpg** — 异步 ORM
-- **PostgreSQL 16 + pgvector** — HNSW 向量索引
-- **Elasticsearch 8.x** — 关键词检索 + IK 中文分词
-- **MinIO** — S3 兼容对象存储
-- **LangGraph** — AI Agent 框架
-- **Pydantic v2** — 配置与数据验证
+## 技术架构
 
-### 前端
-- **Vue 3** (Composition API) + **TypeScript** + **Vite 8**
-- **Pinia** — 状态管理
-- **Element Plus** — UI 组件库（中文 locale）
-- **KaTeX + DOMPurify** — Markdown 与 LaTeX 公式安全渲染
-- **Axios** — HTTP 客户端
+### 后端服务
 
-### AI 模型
-- **DeepSeek** — 聊天大模型（可配置）
-- **阿里云 text-embedding-v4** — 嵌入模型（可配置）
-- 管理员可在系统设置中切换模型，无需改配置文件
-
-## 核心功能
-
-### 知识库问答（RAG QA）
 ```
-用户提问 → 查询规划（LLM，DIRECT/REWRITE/DECOMPOSE）
-    → 并行混合检索（PGvector 语义 + ES 关键词）
-    → RRF 融合排序 → 聚类 → 四级证据评估（SUFFICIENT/PARTIAL/WEAK/NONE）
-    → LLM 生成（真流式 SSE）→ 引用溯源
+┌─────────────────────────────────────────────────────────────┐
+│                     forest-python                           │
+├─────────────┬──────────────┬──────────────┬────────────────┤
+│  FastAPI    │  SQLAlchemy  │   LangGraph  │  Pydantic v2   │
+│  异步框架    │  ORM + 异步   │  Agent 框架  │  数据验证       │
+└─────────────┴──────────────┴──────────────┴────────────────┘
+        │              │              │
+        ▼              ▼              ▼
+  ┌─────────┐   ┌──────────┐   ┌──────────┐
+  │ PG 16   │   │ ES 8.x   │   │  MinIO   │
+  │ pgvector│   │ IK分词   │   │ 对象存储  │
+  └─────────┘   └──────────┘   └──────────┘
 ```
-- 证据不足（NONE）直接拒答，不浪费 LLM 调用
-- **云端历史**：每次问答自动落库，可回顾、续聊（追问追加到同一会话）、删除
 
-### AI 智能助手
-- ReactAgent 图执行引擎，自主决定是否调用知识库检索工具
-- **LLM 语义记忆摘要**："AI 记住了什么"卡片可视化会话记忆
-- **消息游标分页**：长会话按需加载更早消息
-- **会话归档**：手动归档 + 30 天未活跃自动归档，可随时恢复
-- SSE 流式输出，打字机效果；LLM 用量计入统计
+**核心技术栈**：
+- **运行时**: Python 3.12 / FastAPI 异步服务
+- **数据存储**: PostgreSQL 16 (HNSW向量) + Elasticsearch 8.x (全文检索)
+- **对象存储**: MinIO (S3 兼容)
+- **AI 引擎**: LangGraph Agent + 多模型支持
 
-### 文档管理
-- 直接上传 + 分片上传（断点续传/秒传），24h 过期会话自动清理
-- 多格式支持：PDF（Docling 深度解析）/ DOCX / MD / TXT
-- 自动 ETL 流水线：解析 → 清洗 → 结构化切块 → 向量化 → ES 索引
-- 同群组内 SHA-256 去重；失败文档可重试
+### 前端应用
 
-### 协作小组
-- 创建群组、邀请成员、加入申请/审批
-- 群组级数据隔离（向量检索和 ES 检索均过滤 group_id，接口层强制成员校验）
-- 待审批申请实时角标提醒
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    forest-frontend                          │
+├─────────────────────────────────────────────────────────────┤
+│  Vue 3 (Composition API) + TypeScript + Vite 8              │
+│  Element Plus UI · Pinia 状态 · Axios · KaTeX 公式渲染       │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### 管理控制台（管理员）
-- **全局文档管理**：跨群组总览、状态统计、批量重试失败、删除
-- **全局群组管理**：全量列表、成员管理、停用/恢复、解散（级联清理索引）
-- **问答历史**：全平台问答浏览（按用户/群组筛选）、拒答分析
-- **数据洞察**：文档上传趋势、活跃用户、格式分布、**检索证据质量分布**
-- **系统健康**：PG/ES/MinIO/Embedding 连通性、处理队列、失败任务
-- **审计日志**：敏感操作留痕（删除/解散/封禁/重置密码/模型变更）
-- **用户管理**：创建用户、状态管理、密码重置、用量明细
-- **LLM 用量统计**：调用次数、Token、费用、趋势图、排行
+**前端技术栈**：
+- **框架**: Vue 3.5 + TypeScript + Vite 8
+- **UI 库**: Element Plus (中文本地化)
+- **状态管理**: Pinia
+- **特殊渲染**: KaTeX + DOMPurify (公式与安全)
 
-### 其他
-- 数学公式渲染（KaTeX）：问答、助手、Markdown 预览统一支持
-- 前端全站中文（Element Plus zh-cn）
-- 深色友好的统计图表（SVG 手绘，双 Y 轴）
+---
+
+## 功能特性
+
+### 一、知识库问答
+
+```
+提问 → 查询规划(LLM) → 并行检索(向量+关键词) → 融合排序 → 证据评估 → 生成回答
+```
+
+- **四级证据评估**：SUFFICIENT / PARTIAL / WEAK / NONE
+- **主动拒答**：证据不足时直接告知，避免幻觉
+- **云端历史**：自动保存问答记录，支持续聊与追溯
+
+### 二、AI 智能助手
+
+- **ReactAgent 引擎**：自主决策是否调用检索工具
+- **语义记忆**："AI 记住了什么"可视化卡片
+- **会话管理**：归档、恢复、游标分页
+- **流式输出**：真 SSE 流式响应，打字机效果
+
+### 三、文档管理
+
+| 特性 | 说明 |
+|-----|------|
+| 多格式支持 | PDF / DOCX / MD / TXT |
+| 深度解析 | Docling 引擎处理复杂版面 |
+| 智能切片 | 结构化切块 + 向量化 |
+| 去重机制 | SHA-256 同群去重 |
+| 断点续传 | 分片上传 + 秒传 |
+
+### 四、协作小组
+
+- 群组创建与成员邀请
+- 申请/审批流程
+- 实时角标提醒
+- 群组级数据隔离（向量检索 + ES 检索双重过滤）
+
+### 五、管理控制台
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      管理员视图                              │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│  文档总览    │  群组管理    │  问答历史    │   系统健康     │
+├──────────────┼──────────────┼──────────────┼────────────────┤
+│  数据洞察    │  审计日志    │  用户管理    │   LLM 用量统计  │
+└──────────────┴──────────────┴──────────────┴────────────────┘
+```
+
+**关键能力**：
+- 跨群组文档状态统计
+- 检索质量分布分析
+- 敏感操作审计留痕
+- 模型动态切换配置
+
+---
 
 ## 项目截图
 
-### 首页
-![首页](./docs/images/首页.png)
+| 首页 | 知识库问答 | AI 助手 | 协作小组 |
+|------|-----------|---------|---------|
+| ![首页](./docs/images/首页.png) | ![知识库问答](./docs/images/知识库问答.png) | ![AI助手](./docs/images/AI助手.png) | ![协作小组](./docs/images/小组协作.png) |
 
-### 知识库问答
-![知识库问答](./docs/images/知识库问答.png)
+---
 
-### AI 助手
-![AI助手](./docs/images/AI助手.png)
+## 快速部署
 
-### 协作小组
-![协作小组](./docs/images/小组协作.png)
+### 前置要求
 
-## 快速开始
+- Docker + Docker Compose
+- Node.js 20+ / Python 3.12+
 
-详见 **[STARTUP.md](STARTUP.md)**
+### 一键启动
 
 ```bash
-# 1. 启动基础设施
+# 1. 启动基础服务
 docker compose up -d
 
-# 2. 配置后端
+# 2. 配置后端环境变量
 cd forest-python
-cp .env.example .env   # 编辑 API Key
+cp .env.example .env
+# 编辑 .env 填入 API Key
+
+# 3. 初始化数据库
 pip install -r requirements.txt
 python init_db.py
 
-# 3. 启动后端
+# 4. 启动后端
 uvicorn app.main:app --host 0.0.0.0 --port 10001 --reload
 
-# 4. 启动前端
-cd forest-frontend
-npm install && npm run dev
+# 5. 启动前端
+cd ../forest-frontend
+npm install
+npm run dev
 ```
 
-访问 `http://localhost:5888`，默认管理员：`admin` / `Admin@123456`
+访问 **http://localhost:5888**，默认管理员：`admin` / `Admin@123456`
 
-## 项目结构
+---
+
+## 目录结构
 
 ```
 forest/
-├── docker-compose.yml              # PostgreSQL + MinIO + Elasticsearch
-├── forest-python/                   # Python FastAPI 后端
+├── docker-compose.yml          # 基础设施编排
+├── forest-python/              # 后端服务
 │   ├── app/
-│   │   ├── main.py                 #   入口、生命周期、周期清理任务
-│   │   ├── config.py               #   配置（.env 加载）
-│   │   ├── auth/                   #   认证授权
-│   │   ├── user/                   #   用户管理（含管理员创建用户）
-│   │   ├── group/                  #   群组协作 + 管理接口
-│   │   ├── document/               #   文档管理 + 管理接口 + 维护任务
-│   │   ├── ingestion/              #   ETL 流水线
-│   │   ├── qa/                     #   知识库问答 + 会话落库/历史
-│   │   ├── assistant/              #   AI 助手 Agent + 记忆/归档
-│   │   ├── metrics/                #   用量统计 + 平台洞察
-│   │   ├── models_config/          #   模型配置管理
-│   │   ├── audit/                  #   审计日志
-│   │   ├── system/                 #   系统健康检查
-│   │   └── engine/                 #   基础设施（PG/ES/MinIO）
-│   ├── init_db.py                  #   数据库初始化
-│   └── .env.example                #   环境变量模板（占位 Key）
-└── forest-frontend/                 # Vue 3 前端
+│   │   ├── main.py            # 应用入口
+│   │   ├── config.py          # 配置加载
+│   │   ├── auth/              # 认证授权
+│   │   ├── user/              # 用户管理
+│   │   ├── group/             # 群组协作
+│   │   ├── document/          # 文档管理
+│   │   ├── ingestion/         # ETL 流水线
+│   │   ├── qa/                # 知识库问答
+│   │   ├── assistant/         # AI 助手 Agent
+│   │   ├── metrics/           # 数据洞察
+│   │   ├── models_config/     # 模型配置
+│   │   ├── audit/             # 审计日志
+│   │   ├── system/            # 系统健康
+│   │   └── engine/            # 基础设施层
+│   ├── init_db.py             # 数据库初始化
+│   ├── pyproject.toml         # 依赖配置
+│   └── .env.example           # 环境变量模板
+│
+└── forest-frontend/            # 前端应用
     └── src/
-        ├── api/                    #   后端 API 封装
-        ├── views/                  #   页面组件
-        │   ├── documents/          #     文档管理
-        │   ├── qa/                 #     知识库问答（云端历史/续聊）
-        │   ├── assistant/          #     AI 助手（记忆/归档）
-        │   ├── groups/             #     协作小组
-        │   ├── admin/              #     管理控制台（文档/群组/问答/洞察/健康/审计/用户/统计）
-        │   └── settings/           #     系统设置
-        ├── stores/                 #   Pinia 状态
-        ├── utils/                  #   markdown/KaTeX、sanitize
-        └── components/             #   公共组件
+        ├── api/               # API 封装
+        ├── views/             # 页面组件
+        │   ├── documents/     # 文档管理页
+        │   ├── qa/            # 问答页
+        │   ├── assistant/     # 助手页
+        │   ├── groups/        # 协作页
+        │   ├── admin/         # 管理后台
+        │   └── settings/      # 系统设置
+        ├── stores/            # 状态管理
+        ├── utils/             # 工具函数
+        └── components/        # 公共组件
 ```
 
-## 文档
+---
 
-- [STARTUP.md](STARTUP.md) — 启动与部署指南
-- [需求文档](docs/需求文档.md) — 完整功能需求
-- [设计文档](docs/设计文档.md) — 架构与设计说明
-- [代码审查修复报告](docs/代码审查修复报告.md) — 问题记录与修复日志
+## 扩展与定制
 
-## License
+### 支持的大模型
 
-MIT
+| 模型类型 | 支持列表 |
+|---------|---------|
+| 聊天模型 | DeepSeek, Claude, GPT, Gemini, Qwen, GLM, Grok 等 |
+| 嵌入模型 | text-embedding-v4, nomic-embed-text, bge-m3 等 |
+| 重排序 | gte-rerank-v2 |
 
+所有模型均可通过管理控制台动态切换，无需重启服务。
+
+### 插件化架构
+
+- **解析器**：MinerU / Markdown / 文本解析器可插拔
+- **向量存储**：PostgreSQL pgvector 为主，可扩展其他向量库
+- **全文检索**：Elasticsearch，支持自定义分词器
+
+---
+
+## 相关文档
+
+- [启动指南](STARTUP.md) — 完整部署与配置说明
+- [需求文档](docs/需求文档.md) — 功能需求规格
+- [设计文档](docs/设计文档.md) — 系统架构设计
+- [修复报告](docs/代码审查修复报告.md) — 问题追踪与修复日志
+
+---
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。
+
+---
+
+<div align="center">
+
+**森林之中，万物互联** — 让知识在组织中自然生长 🌲
+
+</div>
