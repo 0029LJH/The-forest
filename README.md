@@ -111,7 +111,7 @@
 ![知识库问答](./docs/images/知识库问答.png)
 
 ### AI 助手
-![AI助手](./docs/images/ai助手.png)
+![AI助手](./docs/images/AI助手.png)
 
 ### 协作小组
 ![协作小组](./docs/images/小组协作.png)
@@ -188,3 +188,4 @@ forest/
 ## License
 
 MIT
+
