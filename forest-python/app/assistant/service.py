@@ -1,0 +1,518 @@
+import asyncio
+import logging
+from datetime import datetime
+
+from app.common.time_utils import utcnow
+from typing import AsyncIterator, Optional, List
+
+from sqlalchemy import select, update, delete, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.assistant.models import AssistantSession, AssistantMessage, AssistantSessionContext
+from app.assistant.memory.manager import AssistantShortTermMemoryManager
+from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
+
+from app.assistant.agent import facade
+from app.metrics.collector import LlmUsageCollector, estimate_tokens
+
+logger = logging.getLogger(__name__)
+
+SESSION_STATUS_ACTIVE = "ACTIVE"
+SESSION_STATUS_ARCHIVED = "ARCHIVED"
+SESSION_STATUS_DELETED = "DELETED"
+# Sessions idle longer than this are auto-archived (lazily, on list)
+ARCHIVE_IDLE_DAYS = 30
+
+
+def _fmt(dt) -> Optional[str]:
+    return dt.isoformat() + "Z" if dt else None
+
+
+class AssistantService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.memory = AssistantShortTermMemoryManager(session)
+
+    # ---- Sessions ----
+
+    async def list_sessions(self, user_id: int, status: str = SESSION_STATUS_ACTIVE,
+                            mode: Optional[str] = None) -> List[dict]:
+        if status == SESSION_STATUS_ACTIVE:
+            await self._lazy_archive(user_id)
+        stmt = (
+            select(AssistantSession)
+            .where(AssistantSession.user_id == user_id, AssistantSession.status == status)
+            .order_by(AssistantSession.last_message_at.desc().nullslast(), AssistantSession.created_at.desc())
+        )
+        if mode:
+            stmt = stmt.where(AssistantSession.mode == mode)
+        result = await self.session.execute(stmt)
+        return [
+            {"session_id": s.id, "title": s.title, "mode": s.mode, "status": s.status,
+             "last_message_at": _fmt(s.last_message_at), "created_at": _fmt(s.created_at)}
+            for s in result.scalars()
+        ]
+
+    async def _lazy_archive(self, user_id: int) -> None:
+        """Archive ACTIVE sessions idle for ARCHIVE_IDLE_DAYS (no background job)."""
+        from datetime import timedelta
+
+        cutoff = utcnow() - timedelta(days=ARCHIVE_IDLE_DAYS)
+        await self.session.execute(
+            update(AssistantSession)
+            .where(
+                AssistantSession.user_id == user_id,
+                AssistantSession.status == SESSION_STATUS_ACTIVE,
+                AssistantSession.last_message_at.isnot(None),
+                AssistantSession.last_message_at < cutoff,
+            )
+            .values(status=SESSION_STATUS_ARCHIVED, updated_at=utcnow())
+        )
+        await self.session.flush()
+
+    async def archive_session(self, user_id: int, session_id: int) -> None:
+        await self._set_session_status(user_id, session_id, SESSION_STATUS_ARCHIVED)
+
+    async def restore_session(self, user_id: int, session_id: int) -> None:
+        await self._set_session_status(user_id, session_id, SESSION_STATUS_ACTIVE)
+
+    async def _set_session_status(self, user_id: int, session_id: int, status: str) -> None:
+        result = await self.session.execute(
+            update(AssistantSession)
+            .where(
+                AssistantSession.id == session_id,
+                AssistantSession.user_id == user_id,
+                AssistantSession.status != SESSION_STATUS_DELETED,
+            )
+            .values(status=status, updated_at=utcnow())
+        )
+        if result.rowcount == 0:
+            from app.common.exception.exceptions import BusinessException
+            raise BusinessException("会话不存在")
+        await self.session.flush()
+
+    async def create_session(self, user_id: int, title: str = "新会话",
+                             mode: str = "CHAT") -> dict:
+        session_entity = AssistantSession(
+            user_id=user_id,
+            title=title,
+            mode=mode,
+            status="ACTIVE",
+        )
+        self.session.add(session_entity)
+        await self.session.flush()
+        return {"session_id": session_entity.id, "title": session_entity.title,
+                "mode": session_entity.mode, "status": session_entity.status}
+
+    async def update_session(self, user_id: int, session_id: int, title: str) -> dict:
+        await self.session.execute(
+            update(AssistantSession)
+            .where(AssistantSession.id == session_id, AssistantSession.user_id == user_id)
+            .values(title=title, updated_at=utcnow())
+        )
+        await self.session.flush()
+        return {"session_id": session_id, "title": title}
+
+    async def delete_session(self, user_id: int, session_id: int) -> None:
+        # Verify session exists and belongs to user
+        result = await self.session.execute(
+            select(AssistantSession)
+            .where(AssistantSession.id == session_id, AssistantSession.user_id == user_id)
+        )
+        if result.scalar_one_or_none() is None:
+            from app.common.exception.exceptions import BusinessException
+            raise BusinessException("会话不存在")
+
+        # Delete messages
+        msg_result = await self.session.execute(
+            delete(AssistantMessage).where(AssistantMessage.session_id == session_id)
+        )
+        # Delete context
+        ctx_result = await self.session.execute(
+            delete(AssistantSessionContext).where(AssistantSessionContext.session_id == session_id)
+        )
+        # Soft-delete session
+        await self.session.execute(
+            update(AssistantSession)
+            .where(AssistantSession.id == session_id)
+            .values(status="DELETED", updated_at=utcnow())
+        )
+        await self.session.flush()
+        logger.info("Session %s deleted: %d messages, context cleaned", session_id, msg_result.rowcount)
+
+    async def get_session(self, user_id: int, session_id: int) -> dict:
+        result = await self.session.execute(
+            select(AssistantSession)
+            .where(AssistantSession.id == session_id, AssistantSession.user_id == user_id)
+        )
+        s = result.scalar_one_or_none()
+        if s is None:
+            return {}
+        return {
+            "session_id": s.id, "title": s.title, "status": s.status,
+            "last_message_at": _fmt(s.last_message_at), "created_at": _fmt(s.created_at),
+        }
+
+    async def _check_session_owner(self, user_id: int, session_id: int) -> None:
+        """归属校验：会话必须属于当前用户且未删除，否则抛异常（防 IDOR 越权）。"""
+        result = await self.session.execute(
+            select(AssistantSession.id).where(
+                AssistantSession.id == session_id,
+                AssistantSession.user_id == user_id,
+                AssistantSession.status != SESSION_STATUS_DELETED,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            from app.common.exception.exceptions import BusinessException
+            raise BusinessException("会话不存在")
+
+    async def get_context(self, user_id: int, session_id: int, recent_limit: int = 12) -> dict:
+        await self._check_session_owner(user_id, session_id)
+        ctx = await self.memory.load_context(session_id)
+        result = await self.session.execute(
+            select(AssistantMessage)
+            .where(AssistantMessage.session_id == session_id)
+            .order_by(AssistantMessage.created_at.desc(), AssistantMessage.id.desc())
+            .limit(recent_limit)
+        )
+        recent = []
+        for m in reversed(list(result.scalars())):
+            recent.append({"message_id": m.id, "role": m.role, "content": m.content,
+                          "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at),
+                          "structured_payload": m.structured_payload})
+        summary_text = ctx.get("summary_text") or ctx.get("compact_summary") or ""
+        return {
+            "summaryText": summary_text,
+            "summaryUpdatedAt": _fmt(ctx.get("updated_at")),
+            "recentMessages": recent,
+        }
+
+    # ---- Messages ----
+
+    async def list_messages(self, user_id: int, session_id: int,
+                            before_id: Optional[int] = None,
+                            limit: int = 30) -> dict:
+        """Cursor-paginated messages, newest first internally, returned ascending."""
+        await self._check_session_owner(user_id, session_id)
+        stmt = select(AssistantMessage).where(AssistantMessage.session_id == session_id)
+        if before_id is not None:
+            stmt = stmt.where(AssistantMessage.id < before_id)
+        stmt = stmt.order_by(AssistantMessage.id.desc()).limit(limit + 1)
+        result = await self.session.execute(stmt)
+        rows = list(result.scalars())
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        rows.reverse()
+        return {
+            "items": [
+                {"message_id": m.id, "role": m.role, "content": m.content,
+                 "tool_mode": m.tool_mode, "group_id": m.group_id, "created_at": _fmt(m.created_at),
+                 "structured_payload": m.structured_payload}
+                for m in rows
+            ],
+            "has_more": has_more,
+            "next_before_id": rows[0].id if has_more and rows else None,
+        }
+
+    async def refresh_summary(self, user_id: int, session_id: int) -> str:
+        """Force-regenerate the session's semantic summary (for the memory card)."""
+        result = await self.session.execute(
+            select(AssistantSession)
+            .where(AssistantSession.id == session_id, AssistantSession.user_id == user_id)
+        )
+        if result.scalar_one_or_none() is None:
+            from app.common.exception.exceptions import BusinessException
+            raise BusinessException("会话不存在")
+        ctx = await self.memory.get_or_create_context(session_id)
+        await self.memory._update_summary(session_id, ctx, user_id)
+        await self.session.flush()
+        return ctx.summary_text or ctx.compact_summary or ""
+
+    # ---- Chat ----
+
+    async def chat(self, user_id: int, session_id: int, message: str,
+                   tool_mode: str = "CHAT", group_id: Optional[int] = None,
+                   system_role: str = "USER", user_code: str = "") -> dict:
+        session_id = await self._ensure_session(user_id, session_id)
+
+        # Save user message
+        self.session.add(AssistantMessage(
+            session_id=session_id, role="USER", tool_mode=tool_mode,
+            group_id=group_id, content=message,
+        ))
+        await self.session.flush()
+
+        # Memory maintenance
+        await self.memory.maintain_before_response(session_id, user_id)
+
+        # Load context and build instruction
+        ctx = await self.memory.load_context(session_id)
+        instruction = self._build_instruction(ctx, tool_mode)
+
+        # Call agent
+        thread_id = f"session_{session_id}"
+        result = await facade.chat_sync(instruction, message, tool_mode, group_id, thread_id,
+                                        user_id, system_role, user_code)
+
+        # Save tool-call messages before the assistant reply
+        self._save_tool_messages(session_id, tool_mode, result.get("tool_calls", []))
+
+        # Save assistant message
+        self.session.add(AssistantMessage(
+            session_id=session_id, role="ASSISTANT", tool_mode=tool_mode,
+            content=result["reply"],
+            structured_payload={"citations": result.get("citations", [])},
+        ))
+
+        # Update session
+        await self.session.execute(
+            update(AssistantSession)
+            .where(AssistantSession.id == session_id)
+            .values(last_message_at=utcnow(),
+                    updated_at=utcnow())
+        )
+        await self.session.flush()
+
+        # Auto-title (fire-and-forget, non-critical)
+        import asyncio
+        asyncio.create_task(self._auto_title_async(session_id, user_id, message, result.get("reply", "")))
+
+        # Record LLM usage (real counts from ainvoke response, fallback estimated)
+        await self._record_usage(user_id, group_id, session_id, "/api/assistant/chat",
+                                 instruction + "\n" + message, result.get("reply", ""),
+                                 real_usage=result.get("usage"))
+
+        return {
+            "session_id": session_id,
+            "reply": result["reply"],
+            "citations": result.get("citations", []),
+            "thinking": result.get("thinking", ""),
+        }
+
+    async def chat_stream(self, user_id: int, session_id: int, message: str,
+                          tool_mode: str = "CHAT", group_id: Optional[int] = None,
+                          system_role: str = "USER", user_code: str = "",
+                          resume: Optional[str] = None) -> AsyncIterator[dict]:
+        session_id = await self._ensure_session(user_id, session_id)
+
+        if resume is None:
+            # 首次请求：保存用户消息 + 记忆维护 + 构建指令
+            self.session.add(AssistantMessage(
+                session_id=session_id, role="USER", tool_mode=tool_mode,
+                group_id=group_id, content=message,
+            ))
+            await self.session.flush()
+            await self.memory.maintain_before_response(session_id, user_id)
+        ctx = await self.memory.load_context(session_id)
+        instruction = self._build_instruction(ctx, tool_mode)
+
+        thread_id = f"session_{session_id}"
+        full_reply = ""
+        tool_calls = []
+        citations = []
+        confirmation_pending = False
+        done_reason = "completed"
+        real_usage = None
+        assistant_msg: Optional[AssistantMessage] = None
+
+        try:
+            async for ev in facade.chat_stream(instruction, message, tool_mode, group_id, thread_id,
+                                               user_id, system_role, user_code, resume):
+                if ev["event"] == "delta":
+                    full_reply += ev["data"]
+                    yield ev
+                elif ev["event"] == "confirmation":
+                    confirmation_pending = True
+                    yield ev
+                elif ev["event"] == "done":
+                    tool_calls = ev["data"].get("tool_calls", [])
+                    citations = ev["data"].get("citations", [])
+                    done_reason = ev["data"].get("reason", "completed")
+                    real_usage = ev["data"].get("usage")
+                else:
+                    yield ev  # tool_start / tool_end 透传给前端
+        except asyncio.CancelledError:
+            # 用户停止生成：保留部分回答并落库（GeneratorExit 也会走到 finally）
+            done_reason = "interrupted"
+        finally:
+            if not confirmation_pending:
+                # Save tool-call messages before the assistant reply
+                self._save_tool_messages(session_id, tool_mode, tool_calls)
+                payload = {}
+                if citations:
+                    payload["citations"] = citations
+                if done_reason == "interrupted":
+                    payload["interrupted"] = True
+                assistant_msg = AssistantMessage(
+                    session_id=session_id, role="ASSISTANT", tool_mode=tool_mode,
+                    content=full_reply,
+                    structured_payload=payload or None,
+                )
+                self.session.add(assistant_msg)
+                await self.session.execute(
+                    update(AssistantSession)
+                    .where(AssistantSession.id == session_id)
+                    .values(last_message_at=utcnow(),
+                            updated_at=utcnow())
+                )
+                await self.session.flush()
+
+        if confirmation_pending:
+            # 首次流被 interrupt 暂停：不落空 ASSISTANT 消息，
+            # 等待用户确认后的恢复流再落库（USER 消息已保存）
+            return
+
+        # 完整 done 事件：reply/citations/messageId/reason（此前 router 补发的
+        # done 为空，导致前端引用栏永不显示、messageId 恒空）
+        try:
+            yield {"event": "done", "data": {
+                "reply": full_reply,
+                "citations": citations,
+                "messageId": assistant_msg.id if assistant_msg else None,
+                "reason": done_reason,
+            }}
+        except Exception:
+            # 中断场景下客户端可能已断开，done 发不出去不影响落库
+            return
+
+        if done_reason == "interrupted":
+            return
+
+        # Auto-title (fire-and-forget, non-critical, with its own session)
+        import asyncio as _asyncio
+        _asyncio.create_task(self._auto_title_async(session_id, user_id, message, full_reply))
+
+        # Record LLM usage (real counts from stream, fallback estimated)
+        await self._record_usage(user_id, group_id, session_id, "/api/assistant/chat/stream",
+                                 instruction + "\n" + message, full_reply,
+                                 real_usage=real_usage)
+
+    async def _ensure_session(self, user_id: int, session_id: Optional[int]) -> int:
+        if session_id:
+            # 归属校验：防向他人会话写入消息（IDOR）
+            await self._check_session_owner(user_id, session_id)
+            return session_id
+        result = await self.create_session(user_id)
+        return result["session_id"]
+
+    def _save_tool_messages(self, session_id: int, tool_mode: str, tool_calls: list) -> None:
+        """Persist each tool call as one TOOL message (content = JSON)."""
+        import json
+        for tc in tool_calls:
+            self.session.add(AssistantMessage(
+                session_id=session_id, role="TOOL", tool_mode=tool_mode,
+                content=json.dumps({
+                    "tool_name": tc.get("name", ""),
+                    "args": tc.get("args", ""),
+                    "result": tc.get("result", ""),
+                    "status": tc.get("status", "success"),
+                }, ensure_ascii=False),
+            ))
+
+    def _build_instruction(self, ctx: dict, tool_mode: str) -> str:
+        parts = ["你是一个智能AI助手。"]
+        if tool_mode == "KB_SEARCH":
+            parts.append("你可以使用 knowledge_base_search 工具搜索知识库文档。"
+                         "每次对话只能调用一次搜索工具。获取证据后直接给出最终回答。")
+        elif tool_mode == "ADMIN":
+            parts.append(
+                "你是平台管理助手，管理员可以通过你管理群组和文档。可用工具：\n"
+                "- list_groups 列出全部群组\n- get_group_stats 查看群组统计（文档数/存储/成员数）\n"
+                "- list_group_members 查看群组成员\n- list_documents 列出文档（可按群组/状态/文件名筛选）\n"
+                "- search_knowledge 搜索知识库内容\n"
+                "- ban_group 停用群组 / unban_group 恢复群组 / delete_document 删除文档\n"
+                "规则：\n"
+                "1. 停用、恢复、删除等写操作，直接调用对应工具（ban_group/unban_group/delete_document）；"
+                "工具会在执行前自动暂停，等待用户在界面上确认或取消，**不要用文字向用户询问确认，直接调用工具**；\n"
+                "2. 回答必须基于工具返回的真实数据，查不到就如实说明；\n"
+                "3. 涉及群组时先用 list_groups 确认群组 id，涉及文档时先用 list_documents 确认文档 id。")
+        else:
+            parts.append(
+                "你可以使用以下工具查询用户参与的群组及其文档元信息：\n"
+                "- list_my_groups 列出当前用户加入或拥有的群组（含角色、状态）\n"
+                "- get_group_stats 查看某群组统计（文档数/存储/成员数/所有者）\n"
+                "- list_group_documents 查看某群组的文档列表（文件名/状态/大小/上传时间）\n"
+                "- list_group_members 查看某群组的成员列表\n"
+                "规则：\n"
+                "1. 回答必须基于工具返回的真实数据，查不到就如实说明，不要编造群组或文档信息；\n"
+                "2. 涉及具体群组时先用 list_my_groups 确认群组 id；\n"
+                "3. 工具已自动校验访问权限，被拒绝时如实告知用户无权访问；\n"
+                "4. 与知识库内容检索相关的问题不要用这些工具（它们只提供群组/文档的元信息）。")
+
+        # Include recent conversation history so the assistant has short-term memory
+        recent = ctx.get("recent_messages", [])
+        if recent:
+            history = ["\n最近对话记录："]
+            for m in recent[-10:]:  # last 10 messages
+                role = "用户" if m["role"] == "USER" else "助手"
+                history.append(f"[{role}] {m['content'][:300]}")
+            parts.append("\n".join(history))
+
+        if ctx.get("compact_summary"):
+            parts.append(f"\n历史对话摘要：\n{ctx['compact_summary']}")
+        if ctx.get("session_memory"):
+            parts.append(f"\n会话记忆：\n{ctx['session_memory']}")
+
+        parts.append("\n请用中文回答，保持简洁专业。")
+        return "\n".join(parts)
+
+    async def _record_usage(self, user_id: int, group_id: Optional[int], session_id: int,
+                            endpoint: str, prompt_text: str, completion_text: str,
+                            real_usage: Optional[dict] = None) -> None:
+        """Record LLM usage for an assistant call (non-critical).
+
+        real_usage 为流式末 chunk / ainvoke 响应提取的真实用量
+        {input_tokens, output_tokens}；缺失时回退字符数估算。
+        """
+        try:
+            from app.models_config.resolver import get_chat_config
+            chat_cfg = await get_chat_config(user_id)
+            if real_usage:
+                prompt_tokens = real_usage["input_tokens"]
+                completion_tokens = real_usage["output_tokens"]
+                is_estimated = False
+            else:
+                prompt_tokens = estimate_tokens(prompt_text)
+                completion_tokens = estimate_tokens(completion_text)
+                is_estimated = True
+            collector = LlmUsageCollector(self.session)
+            await collector.record(
+                user_id=user_id,
+                group_id=group_id,
+                module="assistant",
+                endpoint=endpoint,
+                session_id=str(session_id),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+                success=True,
+                is_estimated=is_estimated,
+                model_name=chat_cfg["model_name"],
+            )
+            await self.session.flush()
+        except Exception:
+            pass  # metrics failure should never break chat
+
+    async def _auto_title_async(self, session_id: int, user_id: int, user_msg: str, assistant_reply: str):
+        try:
+            from app.dependencies import async_session_factory
+            from app.models_config.fallback import build_chat_model_with_fallback
+            async with async_session_factory() as db:
+                result = await db.execute(
+                    select(AssistantSession.title).where(AssistantSession.id == session_id)
+                )
+                current_title = result.scalar_one_or_none()
+                if not current_title or current_title == "新会话":
+                    model = await build_chat_model_with_fallback(user_id, temperature=0.3, max_tokens=16)
+                    prompt = f"根据对话生成2-6字标题，直接输出：\n用户：{user_msg[:100]}\n助手：{assistant_reply[:200]}\n标题："
+                    resp = await model.ainvoke([HumanMessage(content=prompt)])
+                    title = resp.content.strip()[:12]
+                    if title:
+                        await db.execute(
+                            update(AssistantSession).where(AssistantSession.id == session_id).values(title=title)
+                        )
+                        await db.commit()
+                        logger.info("Auto-titled session %s → %s", session_id, title)
+        except Exception as e:
+            logger.debug("Auto-title failed (non-critical): %s", e)

@@ -1,0 +1,22 @@
+name: embedding-3
+label: 智谱 Embedding-3
+provider: zhipu
+kind: embedding
+status: active
+description: 智谱文本向量模型
+api:
+  request_format: openai
+  response_format: openai
+  base_url: https://open.bigmodel.cn/api/paas/v4
+context_size: 8192
+output_size: 2048
+dimensions: &id001
+- 2048
+batch_limit: 16
+parameters:
+  dimensions:
+    type: integer
+    title: 向量维度
+    description: 输出向量维度（切换需重灌向量）
+    default: 2048
+    enum: *id001

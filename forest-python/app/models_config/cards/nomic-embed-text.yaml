@@ -1,0 +1,22 @@
+name: nomic-embed-text
+label: Nomic Embed Text（本地）
+provider: ollama
+kind: embedding
+status: active
+description: 本地部署（ollama pull nomic-embed-text）
+api:
+  request_format: openai
+  response_format: openai
+  base_url: http://localhost:11434/v1
+context_size: 8192
+output_size: 768
+dimensions: &id001
+- 768
+batch_limit: 16
+parameters:
+  dimensions:
+    type: integer
+    title: 向量维度
+    description: 输出向量维度（切换需重灌向量）
+    default: 768
+    enum: *id001

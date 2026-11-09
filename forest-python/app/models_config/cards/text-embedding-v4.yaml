@@ -1,0 +1,22 @@
+name: text-embedding-v4
+label: 通义 text-embedding-v4
+provider: dashscope
+kind: embedding
+status: active
+description: DashScope 文本向量模型（原生协议）
+api:
+  request_format: dashscope
+  response_format: dashscope
+  endpoint: https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding
+context_size: 8192
+output_size: 1024
+dimensions: &id001
+- 1024
+batch_limit: 10
+parameters:
+  dimensions:
+    type: integer
+    title: 向量维度
+    description: 输出向量维度（切换需重灌向量）
+    default: 1024
+    enum: *id001

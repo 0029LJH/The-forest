@@ -1,0 +1,104 @@
+import logging
+from decimal import Decimal
+from typing import Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.metrics.models import LlmUsageRecord
+
+logger = logging.getLogger(__name__)
+
+# Pricing per 1K tokens (CNY)
+PRICING = {
+    "qwen-plus": {"input": 0.0008, "output": 0.002},
+    "qwen-turbo": {"input": 0.0003, "output": 0.0006},
+    "qwen-max": {"input": 0.02, "output": 0.06},
+    "deepseek-chat": {"input": 0.002, "output": 0.008},
+    "deepseek-reasoner": {"input": 0.002, "output": 0.008},
+}
+
+# 中文场景经验系数：约 1 token / 1.5 字符
+CHARS_PER_TOKEN = 1.5
+
+
+def estimate_tokens(text: str) -> int:
+    """按字符数估算 token 数（实际调用无真实用量时使用）。"""
+    return int(len(text or "") / CHARS_PER_TOKEN)
+
+
+def extract_usage_from_chunk(chunk) -> Optional[dict]:
+    """从流式 chunk 或完整 AIMessage 提取真实 token 用量。
+
+    流式时需模型开启 ``stream_options={"include_usage": True}``，
+    用量出现在该次调用的最后一个 chunk（通常是空 content 的终止块）。
+    返回 ``{"input_tokens": ..., "output_tokens": ...}``，取不到返回 None。
+    """
+    usage = getattr(chunk, "usage_metadata", None) or {}
+    if usage.get("input_tokens") is None and usage.get("output_tokens") is None:
+        rm = getattr(chunk, "response_metadata", None) or {}
+        usage = rm.get("usage") or rm.get("token_usage") or {}
+    if not usage:
+        return None
+
+    def _pick(*keys):
+        for k in keys:
+            v = usage.get(k)
+            if v is not None:
+                return int(v)
+        return None
+
+    input_tokens = _pick("input_tokens", "prompt_tokens")
+    output_tokens = _pick("output_tokens", "completion_tokens")
+    if input_tokens is None or output_tokens is None:
+        return None
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+class LlmUsageCollector:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def record(
+        self,
+        user_id: int,
+        module: str,
+        endpoint: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        latency_ms: int = 0,
+        success: bool = True,
+        model_name: Optional[str] = None,
+        group_id: Optional[int] = None,
+        session_id: Optional[str] = None,
+        error_message: Optional[str] = None,
+        is_estimated: bool = False,
+    ) -> None:
+        cost = self._calculate_cost(model_name or "", prompt_tokens, completion_tokens)
+
+        record = LlmUsageRecord(
+            user_id=user_id,
+            group_id=group_id,
+            module=module,
+            endpoint=endpoint,
+            session_id=session_id,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            is_estimated=is_estimated,
+            cost_amount=Decimal(str(cost)),
+            cost_currency="CNY",
+            latency_ms=latency_ms,
+            success=success,
+            error_message=error_message,
+            model_name=model_name,
+        )
+        self.session.add(record)
+        await self.session.flush()
+
+    @staticmethod
+    def _calculate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
+        pricing = PRICING.get(model_name, {"input": 0.0008, "output": 0.002})
+        input_cost = prompt_tokens / 1000 * pricing["input"]
+        output_cost = completion_tokens / 1000 * pricing["output"]
+        return round(input_cost + output_cost, 6)
